@@ -15,7 +15,8 @@ from sklearn.exceptions import NotFittedError
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import Pipeline
 
-from constants import BASE_DOMAINS, INTERESTING_PARAMS, INTERESTING_PATHS
+from constants import INTERESTING_PARAMS, INTERESTING_PATHS
+from sample_generation import generate_sample_data
 
 
 class URLAnalyzer:
@@ -445,7 +446,6 @@ class URLAnalyzer:
                 features.append("DEV_DOCS_GENERIC_PATH")
 
         # low priority / context / penalties
-
         if is_support_path:
             features.append("SUPPORT_PATH")
 
@@ -675,7 +675,7 @@ class URLAnalyzer:
             "HAS_PARAMS": 0.01,
             "PARAM_COUNT": 0.005,
             "SIMPLE_QUERY_PARAM": 0.02,
-            # Penalties (slightly moderated extreme penalties)
+            # penalties
             "TRACKING_ENDPOINT": -0.80,
             "UTM_PARAMS": -0.70,
             "SURVEY_PATH": -0.70,
@@ -859,7 +859,7 @@ class URLAnalyzer:
 
         ranked = sorted(adjusted_scores, key=lambda x: x[1], reverse=True)
 
-        # Diversity Logic (uses updated MAX_REPETITIONS from __init__)
+        # Diversity logic (uses updated MAX_REPETITIONS from __init__)
         result = []
         pattern_counts = defaultdict(int)
         feature_counts = defaultdict(int)
@@ -1010,124 +1010,6 @@ def process_url_file(file_path: str) -> List[str]:
         return []
 
 
-def generate_sample_data(output_file: str, num_samples: int = 100) -> str:
-    """
-    Generate sample training data with labeled URLs, emphasizing security patterns.
-
-    Args:
-        output_file: Path where the sample data will be saved
-        num_samples: Number of sample URLs to generate
-
-    Returns:
-        Path to the generated sample file
-    """
-    interesting_count = num_samples // 3
-    normal_count = num_samples - interesting_count
-
-    interesting_urls = []
-
-    pattern_categories = {
-        "SSRF_REDIRECT": [
-            lambda: f"{random.choice(BASE_DOMAINS)}/redirect?url=https://{random.choice(BASE_DOMAINS)}/profile",
-            lambda: f"{random.choice(BASE_DOMAINS)}/login?back=//{random.choice(BASE_DOMAINS)}/admin",
-            lambda: f"{random.choice(BASE_DOMAINS)}/auth?next=http%3A%2F%2Fevil.com",
-            lambda: f"{random.choice(BASE_DOMAINS)}/goto?dest=https://partner-site.com/login",
-            lambda: f"{random.choice(BASE_DOMAINS)}/oauth/authorize?redirect_uri=https://app.com/callback&state=xyz",
-        ],
-        "DANGEROUS_PARAMS": [
-            lambda: f"{random.choice(BASE_DOMAINS)}/search?query=' OR 1=1--",
-            lambda: f"{random.choice(BASE_DOMAINS)}/api/users?id=1 UNION SELECT null, username, password FROM users--",
-            lambda: f"{random.choice(BASE_DOMAINS)}/tools/ping?ip=127.0.0.1; ls -la",
-            lambda: f"{random.choice(BASE_DOMAINS)}/exec?cmd=cat /etc/passwd",
-            lambda: f"{random.choice(BASE_DOMAINS)}/debug?command=whoami",
-        ],
-        "INTERESTING_FILES": [
-            lambda: f"{random.choice(BASE_DOMAINS)}/download?file=../../../etc/shadow",
-            lambda: f"{random.choice(BASE_DOMAINS)}/backup/db_backup_{random.randint(2020, 2024)}.sql.gz",
-            lambda: f"{random.choice(BASE_DOMAINS)}/config/settings.yml",
-            lambda: f"{random.choice(BASE_DOMAINS)}/.git/config",
-            lambda: f"{random.choice(BASE_DOMAINS)}/files/report_{random.randint(1, 100)}.pdf",
-            lambda: f"{random.choice(BASE_DOMAINS)}/export?format=json&data=users",
-        ],
-        "OAUTH_OIDC": [
-            lambda: f"{random.choice(BASE_DOMAINS)}/connect/authorize?client_id=app&response_type=code"
-            f"&scope=openid&state=abc",
-            lambda: f"{random.choice(BASE_DOMAINS)}/.well-known/openid-configuration",
-            lambda: f"{random.choice(BASE_DOMAINS)}/saml/sso?entityID=partner",
-        ],
-        "ADMIN_UNUSUAL_JS": [
-            lambda: f"{random.choice(BASE_DOMAINS)}/admin/dashboard.js",
-            lambda: f"{random.choice(BASE_DOMAINS)}/static/admin-utils-{random.randint(100, 999)}.js",
-            lambda: f"{random.choice(BASE_DOMAINS)}/management/console",
-            lambda: f"{random.choice(BASE_DOMAINS)}/secure/settings/panel",
-            lambda: f"{random.choice(BASE_DOMAINS)}/internal/api/debug",
-        ],
-        "API": [
-            lambda: f"{random.choice(BASE_DOMAINS)}/api/v2/users/{random.randint(1, 1000)}/orders",
-            lambda: f"{random.choice(BASE_DOMAINS)}/rest/products?category=electronics",
-            lambda: f"{random.choice(BASE_DOMAINS)}/graphql?query={{me{{id}}}}",
-        ],
-    }
-
-    category_weights = {
-        "SSRF_REDIRECT": 0.25,
-        "DANGEROUS_PARAMS": 0.20,
-        "INTERESTING_FILES": 0.20,
-        "OAUTH_OIDC": 0.10,
-        "ADMIN_UNUSUAL_JS": 0.15,
-        "API": 0.10,
-    }
-
-    total_weight = sum(category_weights.values())
-    normalized_weights = {k: v / total_weight for k, v in category_weights.items()}
-
-    category_list = list(normalized_weights.keys())
-    weights_list = list(normalized_weights.values())
-
-    for _ in range(interesting_count):
-        chosen_category = random.choices(category_list, weights=weights_list, k=1)[0]
-
-        url_generator = random.choice(pattern_categories[chosen_category])
-        url = "https://" + url_generator()
-        interesting_urls.append((url, 1))
-
-    # Generate normal URLs
-    normal_urls = []
-    normal_categories = [
-        lambda: random.choice(BASE_DOMAINS)
-        + "/css/"
-        + random.choice(["main.css", "style.css", "theme.css"]),
-        lambda: random.choice(BASE_DOMAINS)
-        + "/js/"
-        + random.choice(["app.js", "main.js", "vendor.js"]),
-        lambda: random.choice(BASE_DOMAINS)
-        + "/images/"
-        + random.choice(["logo.png", "banner.jpg", "icon.svg"]),
-        lambda: random.choice(BASE_DOMAINS)
-        + random.choice(["/", "/home", "/about", "/contact", "/products"]),
-        lambda: (
-            f"{random.choice(BASE_DOMAINS)}/blog/post-{random.randint(1, 50)}"
-            + ("?page=" + str(random.randint(1, 5)) if random.random() > 0.8 else "")
-        ),
-        lambda: random.choice(BASE_DOMAINS)
-        + random.choice(["/faq", "/help", "/terms", "/privacy"]),
-    ]
-    for _ in range(normal_count):
-        pattern_gen = random.choice(normal_categories)
-        url = "https://" + pattern_gen()
-        if random.random() > 0.9:
-            url += f"?ref={random.choice(['google', 'newsletter', 'social'])}&utm_campaign=promo"
-        normal_urls.append((url, 0))
-
-    all_urls = interesting_urls + normal_urls
-    random.shuffle(all_urls)
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    df = pd.DataFrame(all_urls, columns=["url", "is_interesting"])
-    df.to_csv(output_file, index=False)
-
-    return output_file
-
-
 def prompt_yes_no(question: str) -> bool:
     """
     Prompt the user with a yes/no question.
@@ -1170,7 +1052,6 @@ For better results, consider creating your own training data with real URLs labe
 def setup_utf8_stdout():
     """Attempt to configure stdout for UTF-8 output with line buffering."""
     try:
-        # Use line_buffering=True to flush output on newlines
         sys.stdout = io.TextIOWrapper(
             sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
         )
@@ -1231,7 +1112,6 @@ def main() -> None:
         if not args.quiet:
             setup_utf8_stdout()
 
-        # Handle sample data generation
         if args.generate_sample:
             sample_file = generate_sample_data(args.sample_output, args.sample_size)
             print(
@@ -1241,21 +1121,17 @@ def main() -> None:
             )
             return
 
-        # Check for stdin input early
         stdin_has_data = not sys.stdin.isatty()
 
-        # Generate sample data if it doesn't exist and we're not training explicitly
         sample_file = "data/sample_training_data.csv"
         if not os.path.exists(sample_file) and not args.train:
             # If we're using stdin for URLs, generate sample data without prompting
             if stdin_has_data:
-                # We're using stdin for URL data, just generate the sample without asking
                 print("No training data found. Generating sample data for future use.")
                 os.makedirs(os.path.dirname(sample_file), exist_ok=True)
                 generate_sample_data(sample_file)
                 print(f"Generated sample training data at: {sample_file}")
             else:
-                # Interactive mode, prompt user
                 generate_sample = prompt_yes_no(
                     "No training data found. Would you like to generate a sample at './data/sample_training_data.csv'?"
                 )
@@ -1272,7 +1148,6 @@ def main() -> None:
                 return
 
             try:
-                # Load training data (CSV with 'url' and 'is_interesting' columns)
                 train_df = pd.read_csv(args.train_file)
                 urls = train_df["url"].tolist()
                 labels = train_df["is_interesting"].tolist()
@@ -1298,7 +1173,6 @@ def main() -> None:
             elif args.url:
                 urls = [args.url]
             else:
-                # Read from stdin
                 if stdin_has_data:
                     if not args.quiet:
                         print("Reading URLs from stdin...")
@@ -1329,7 +1203,6 @@ def main() -> None:
 
                 ranked_urls = analyzer.rank_urls(urls, args.top)
 
-                # Print results
                 if not args.quiet:
                     print("\nAnalysis complete. Top potentially interesting URLs:")
                 else:
@@ -1339,13 +1212,11 @@ def main() -> None:
                     print(f"{i}. [{score:.4f}] {url}")
 
             except NotFittedError:
-                # Handle the case where the model is not trained
                 display_training_instructions()
             except KeyboardInterrupt:
                 print("\nProcess interrupted by user. Exiting.")
                 sys.exit(0)
     except Exception as e:
-        # Ensure error messages also use stderr and attempt UTF-8
         try:
             print(
                 f"An error occurred: {str(e)}",

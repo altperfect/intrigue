@@ -1,3 +1,5 @@
+import random
+
 BASE_DOMAINS = [
     "example.com",
     "test-site.org",
@@ -274,3 +276,46 @@ NORMAL_PARAMS = [
     "ref",
     "source",
 ]
+
+# Sample URL generation patterns for different security categories
+pattern_categories = {
+    "SSRF_REDIRECT": [
+        lambda: f"{random.choice(BASE_DOMAINS)}/redirect?url=https://{random.choice(BASE_DOMAINS)}/profile",
+        lambda: f"{random.choice(BASE_DOMAINS)}/login?back=//{random.choice(BASE_DOMAINS)}/admin",
+        lambda: f"{random.choice(BASE_DOMAINS)}/auth?next=http%3A%2F%2Fevil.com",
+        lambda: f"{random.choice(BASE_DOMAINS)}/goto?dest=https://partner-site.com/login",
+        lambda: f"{random.choice(BASE_DOMAINS)}/oauth/authorize?redirect_uri=https://app.com/callback&state=xyz",
+    ],
+    "DANGEROUS_PARAMS": [
+        lambda: f"{random.choice(BASE_DOMAINS)}/search?query=SELECT+*+FROM+users+ORDER+BY+username",
+        lambda: f"{random.choice(BASE_DOMAINS)}/tools/ping?ip=127.0.0.1",
+        lambda: f"{random.choice(BASE_DOMAINS)}/exec?cmd=ls+-la",
+        lambda: f"{random.choice(BASE_DOMAINS)}/debug?command=pwd;id",
+    ],
+    "INTERESTING_FILES": [
+        lambda: f"{random.choice(BASE_DOMAINS)}/download?file=../../../etc/shadow",
+        lambda: f"{random.choice(BASE_DOMAINS)}/backup/db_backup_{random.randint(2020, 2024)}.sql.gz",
+        lambda: f"{random.choice(BASE_DOMAINS)}/config/settings.yml",
+        lambda: f"{random.choice(BASE_DOMAINS)}/.git/config",
+        lambda: f"{random.choice(BASE_DOMAINS)}/files/report_{random.randint(1, 100)}.pdf",
+        lambda: f"{random.choice(BASE_DOMAINS)}/export?format=json&data=users",
+    ],
+    "OAUTH_OIDC": [
+        lambda: f"{random.choice(BASE_DOMAINS)}/connect/authorize?client_id=app&response_type=code"
+        f"&scope=openid&state=abc",
+        lambda: f"{random.choice(BASE_DOMAINS)}/.well-known/openid-configuration",
+        lambda: f"{random.choice(BASE_DOMAINS)}/saml/sso?entityID=partner",
+    ],
+    "ADMIN_UNUSUAL_JS": [
+        lambda: f"{random.choice(BASE_DOMAINS)}/admin/dashboard.js",
+        lambda: f"{random.choice(BASE_DOMAINS)}/static/admin-utils-{random.randint(100, 999)}.js",
+        lambda: f"{random.choice(BASE_DOMAINS)}/management/console",
+        lambda: f"{random.choice(BASE_DOMAINS)}/secure/settings/panel",
+        lambda: f"{random.choice(BASE_DOMAINS)}/internal/api/debug",
+    ],
+    "API": [
+        lambda: f"{random.choice(BASE_DOMAINS)}/api/v2/users/{random.randint(1, 1000)}/orders",
+        lambda: f"{random.choice(BASE_DOMAINS)}/rest/products?category=electronics",
+        lambda: f"{random.choice(BASE_DOMAINS)}/graphql?query={{me{{id}}}}",
+    ],
+}
