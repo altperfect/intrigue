@@ -1,0 +1,5 @@
+venv/
+data/
+models/
+__pycache__/
+test_files/
