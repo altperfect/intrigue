@@ -1,4 +1,4 @@
-# ML analyzer for ranking interesting URLs from offensive security perspective
+# ML URL analyzer
 
 A tool that helps offensive security specialists to identify potentially interesting URLs from a large set of collected URLs.
 
@@ -13,8 +13,37 @@ The tool uses machine learning to:
 
 ## Installation
 
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management, but `pip` can be used as well.
+
+### Using setup.sh
+
+You can run `setup.sh` to automate the installation process.
+
 ```bash
-pip install -r requirements.txt
+chmod +x setup.sh
+
+./setup.sh
+```
+
+If you see `Setup complete!` message, then the tool is ready.
+
+### Manual
+
+```bash
+# Install uv if you don't have it
+pip install uv
+
+# Install dependencies
+uv pip install -r requirements.txt
+
+# For development (includes pytest)
+uv pip install -r requirements-dev.txt
+
+# Create and activate a virtual environment
+uv venv
+
+# Export env variables to avoid potential errors and terminal issues
+export PYTHONPATH=. && export PYTHONIOENCODING=utf-8
 ```
 
 ## Usage
