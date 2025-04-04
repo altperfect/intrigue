@@ -15,7 +15,14 @@ from sklearn.exceptions import NotFittedError
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import Pipeline
 
-from constants import INTERESTING_PARAMS, INTERESTING_PATHS
+from constants import (
+    IMAGE_EXTENSIONS,
+    INTERESTING_PARAMS,
+    INTERESTING_PATHS,
+    LOCALIZATION_PATHS,
+    LOW_PRIORITY_PATHS,
+    STATIC_INDICATORS_FOR_FEATURE_EXTRACTION,
+)
 from sample_generation import generate_sample_data
 
 
@@ -27,17 +34,21 @@ class URLAnalyzer:
     classifier to identify potentially interesting URLs for security testing.
     """
 
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: Optional[str] = None, quiet: bool = False):
         """
         Initialize the URL analyzer with an optional pre-trained model.
 
         Args:
             model_path: Path to a saved model file. If None, a new model will be created.
+            quiet: If True, suppress informational messages like model loading.
         """
+        self.quiet = quiet
+
         if model_path and os.path.exists(model_path):
             try:
                 self.model = joblib.load(model_path)
-                print(f"Loaded model from {model_path}")
+                if not self.quiet:
+                    print(f"Loaded model from {model_path}")
             except Exception as e:
                 print(f"Error loading model: {str(e)}")
                 self._create_new_model()
@@ -49,7 +60,8 @@ class URLAnalyzer:
             "HASHED_JS_FILE": 2,
             "CERTIFICATE_PRIVATE_PATH": 30,
             "API_ENDPOINT": 30,
-            "DEFAULT": 1,
+            "GENERIC_LOGIN_PATH": 4,
+            "DEFAULT": 30,
         }
 
     def _create_new_model(self) -> None:
@@ -109,22 +121,14 @@ class URLAnalyzer:
         except ValueError:
             return "INVALID_URL"
 
-        features = []
-        file_ext = os.path.splitext(path)[1].lower()
-        filename = os.path.basename(path).lower()
+        # Clean path from potential trailing garbage before extracting parts
+        cleaned_path = path.rstrip("\"'`")
 
-        # static/content path identification (early check)
-        static_indicators = [
-            "/icons/",
-            "/images/",
-            "/img/",
-            "/static/",
-            "/assets/",
-            "/css/",
-            "/fonts/",
-            "/svg/",
-            "/common-v2/",
-        ]
+        features = []
+        file_ext = os.path.splitext(cleaned_path)[1].lower()
+        filename = os.path.basename(cleaned_path).lower()
+
+        static_indicators = STATIC_INDICATORS_FOR_FEATURE_EXTRACTION
         content_paths = [
             "/blog/",
             "/news/",
@@ -147,7 +151,9 @@ class URLAnalyzer:
         is_likely_static_path = any(
             indicator in path for indicator in static_indicators
         )
-        is_svg_icon_path = any(indicator in path for indicator in ["/icons/", "/svg/"])
+        is_svg_icon_path = any(
+            indicator in path for indicator in ["/icons/", "/svg/", "/avatar/"]
+        )
         is_content_path = any(cp in path for cp in content_paths)
         is_support_path = any(sp in path for sp in support_paths)
         is_dev_docs_path = any(dp in path for dp in dev_docs_paths)
@@ -165,16 +171,66 @@ class URLAnalyzer:
             "/track/",
         ]
         has_utm_params = any(p.startswith("utm_") for p in params.keys())
+        has_promo_params = any(
+            p.startswith("promo") or p.endswith("promo") for p in params.keys()
+        )
         is_tracking = any(tp in path for tp in tracking_paths)
+        tracking_in_value = False
+
+        # Check parameter values for tracking indicators
+        value_tracking_indicators = [
+            "utm_",
+            "_ga=",
+            "mc=",
+            "jsredir",
+            "gclid",
+            "fbclid",
+        ]
+        relevant_params_for_value_check = [
+            "referer",
+            "referrer",
+            "redirect",
+            "redirect_uri",
+            "return",
+            "returnurl",
+            "back",
+            "next",
+            "url",
+            "target",
+            "dest",
+            "goto",
+            "continue",
+            "state",
+            "RelayState",
+        ]
+        for param_name, values in params.items():
+            if param_name.lower() in relevant_params_for_value_check:
+                for value in values:
+                    if any(
+                        indicator in value for indicator in value_tracking_indicators
+                    ):
+                        tracking_in_value = True
+                        break
+            if tracking_in_value:
+                break
 
         if is_tracking:
             features.append("TRACKING_ENDPOINT")
         if has_utm_params:
             features.append("UTM_PARAMS")
             is_tracking = True
+        if has_promo_params:
+            features.append("PROMO_PARAMS")
+            is_tracking = True
+        if tracking_in_value:
+            features.append("TRACKING_INDICATOR_IN_VALUE")
+            is_tracking = True
 
         if is_static_override:
             features.append("IS_STATIC_OVERRIDE")
+
+        if any(lp in path for lp in LOCALIZATION_PATHS):
+            features.append("LOCALIZATION_FILE")
 
         # high priority features
         redirect_params = [
@@ -349,6 +405,8 @@ class URLAnalyzer:
             "/login",
             "/signin",
             "/auth",
+            "/account/login",
+            "/user/login",
         ]
         oidc_oauth_params = [
             "client_id",
@@ -367,6 +425,55 @@ class URLAnalyzer:
         ):
             features.append("OAUTH_SAML_FLOW")
             is_oidc_flow = True
+
+            # Check for GENERIC_LOGIN_PATH: OAuth flow is true, but no higher priority features are present
+            is_high_priority = any(
+                f in features
+                for f in [
+                    "SSRF_REDIRECT_URL_IN_PARAM",
+                    "SSRF_REDIRECT_CANDIDATE",
+                    "DANGEROUS_PARAM",
+                    "PATH_TRAVERSAL_PATTERN",
+                    "SENSITIVE_FILENAME",
+                    "HIGH_PRIORITY_EXT",
+                    "WP_CONFIG_FILE",
+                    "WP_ADMIN_SENSITIVE_FILE",
+                    "WP_ADMIN_AREA",  # WP Admin itself is high enough priority
+                ]
+            )
+            # Check if it's one of the specific common login paths
+            is_common_login_path = any(
+                p == path
+                for p in [
+                    "/login",
+                    "/signin",
+                    "/auth",
+                    "/account/login",
+                    "/user/login",
+                    # Also check common patterns like /v*/login
+                    "/v1/login",
+                    "/v2/login",
+                    "/v3/login",
+                    "/v1/account/login",
+                    "/v2/account/login",
+                    "/v3/account/login",
+                    "/v1/auth",
+                    "/v2/auth",
+                    "/v3/auth",
+                    # Check for login within common auth directories
+                    "/connect/login",
+                    "/oauth/login",
+                    "/oidc/login",
+                    "/saml/login",
+                    # Handle cases like /login.aspx
+                    "/login.aspx",
+                    "/signin.aspx",
+                    "/Authenticate.aspx",  # Added .aspx variants
+                ]
+            )
+
+            if is_common_login_path and not is_high_priority:
+                features.append("GENERIC_LOGIN_PATH")
 
         if "TRACKING_ENDPOINT" not in features and path.startswith("/.well-known/"):
             if filename == "openid-configuration":
@@ -439,6 +546,22 @@ class URLAnalyzer:
         ):
             features.append("API_ENDPOINT")
 
+            sensitive_api_keywords = [
+                "token",
+                "key",
+                "secret",
+                "auth",
+                "session",
+                "script",
+                "config",
+                "admin",
+                "debug",
+                "internal",
+                "private",
+            ]
+            if any(keyword in path for keyword in sensitive_api_keywords):
+                features.append("API_SENSITIVE_KEYWORD")
+
         if is_dev_docs_path and not is_tracking:
             if any(kw in path for kw in ["/com/", "/objects/", "/tools/"]):
                 features.append("DEV_DOCS_TOOLS_PATH")
@@ -446,6 +569,9 @@ class URLAnalyzer:
                 features.append("DEV_DOCS_GENERIC_PATH")
 
         # low priority / context / penalties
+        if any(lp in path for lp in LOW_PRIORITY_PATHS):
+            features.append("LOW_PRIORITY_PATH")
+
         if is_support_path:
             features.append("SUPPORT_PATH")
 
@@ -509,6 +635,9 @@ class URLAnalyzer:
             elif is_content_path:
                 features.append("CONTENT_PAGE")
 
+        if file_ext in IMAGE_EXTENSIONS:
+            features.append("IMAGE_FILE")
+
         return " ".join(features)
 
     def rank_urls(self, urls: List[str], top_n: int = 10) -> List[Tuple[str, float]]:
@@ -523,17 +652,12 @@ class URLAnalyzer:
             List of (url, score) tuples sorted by score in descending order
         """
         BATCH_SIZE = 5000
-        URL_THRESHOLD = 50000
 
         if not urls:
             return []
 
         try:
             unique_urls = list(dict.fromkeys(urls))
-
-            if len(unique_urls) > URL_THRESHOLD:
-                msg = f"Processing large URL set ({len(unique_urls)} URLs). This may take some time..."
-                print(msg)
 
             all_scores = []
 
@@ -663,41 +787,50 @@ class URLAnalyzer:
             "WP_ADMIN_AREA": 0.13,
             "OAUTH_SAML_FLOW": 0.14,
             "MEDIUM_PRIORITY_EXT": 0.06,
-            "UNUSUAL_JS_FILE": 0.07,
+            "UNUSUAL_JS_FILE": 0.01,
             "API_ENDPOINT": 0.05,
+            "API_SENSITIVE_KEYWORD": 0.15,
             "DEV_DOCS_TOOLS_PATH": 0.16,
             "DEV_DOCS_GENERIC_PATH": 0.05,
             "WELL_KNOWN_OPENID_CONFIG": 0.03,
             "WELL_KNOWN_SECURITY_TXT": -0.75,
             # low priority / context
-            "FILE_ACCESS_PATH": 0.04,
+            "FILE_ACCESS_PATH": 0.25,
             "LOW_PRIORITY_EXT": 0.01,
             "HAS_PARAMS": 0.01,
             "PARAM_COUNT": 0.005,
             "SIMPLE_QUERY_PARAM": 0.02,
             # penalties
-            "TRACKING_ENDPOINT": -0.80,
+            "LOW_PRIORITY_PATH": -0.95,
+            "TRACKING_ENDPOINT": -1.0,
             "UTM_PARAMS": -0.70,
             "SURVEY_PATH": -0.70,
             "BORING_PARAMS": -0.10,
-            "STATIC_RESOURCE": -0.55,
+            "STATIC_RESOURCE": -0.80,
             "PLAIN_HTML_FILE": -0.60,
             "ROBOTS_TXT": -0.80,
             "COMMON_DOC_FILENAME": -0.80,
             "CONTENT_PAGE": -0.45,
-            "COMMON_JS_FILE": -0.30,
+            "COMMON_JS_FILE": -0.70,
             "HASHED_JS_FILE": -0.40,
             "SUPPORT_PATH": -0.30,
             "IS_STATIC_OVERRIDE": -0.70,
             "DOCS_STATIC_JS": -0.35,
-            "CERTIFICATE_PRIVATE_PATH": -0.30,
+            "CERTIFICATE_PRIVATE_PATH": -0.75,
             "MANAGERS_PATH": -0.45,
             "ICON_SVG_STATIC": -0.70,
             "HTML_DOC_IN_DEV_PATH": -0.25,
             "STATIC_DATA_FILE": -0.15,
             "WELL_KNOWN_STATIC": -0.35,
+            "PROMO_PARAMS": -0.75,
+            "TRACKING_INDICATOR_IN_VALUE": -0.75,
+            "GENERIC_LOGIN_PATH": -0.20,
             "INVALID_URL": -1.0,
+            "LOCALIZATION_FILE": -0.80,
+            "IMAGE_FILE": -0.90,
         }
+
+        MIN_SCORE = 0.01
 
         adjusted_scores = []
         for url, initial_score in url_scores:
@@ -721,7 +854,9 @@ class URLAnalyzer:
             is_redirect = "SSRF_REDIRECT_CANDIDATE" in features
             is_search = "SIMPLE_QUERY_PARAM" in features
             is_api = "API_ENDPOINT" in features
+            is_api_sensitive = "API_SENSITIVE_KEYWORD" in features
             is_file_access = "FILE_ACCESS_PATH" in features
+            is_path_traversal = "PATH_TRAVERSAL_PATTERN" in features
             is_unusual_js = "UNUSUAL_JS_FILE" in features
 
             for feature in features:
@@ -751,6 +886,12 @@ class URLAnalyzer:
                             "ROBOTS_TXT",
                             "COMMON_DOC_FILENAME",
                             "WELL_KNOWN_SECURITY_TXT",
+                            "PROMO_PARAMS",
+                            "TRACKING_INDICATOR_IN_VALUE",
+                            "IMAGE_FILE",
+                            "STATIC_RESOURCE",
+                            "COMMON_JS_FILE",
+                            "LOW_PRIORITY_PATH",
                         ]:
                             primary_penalty_feature = base_feature
                     if weight >= 0.18:
@@ -759,9 +900,8 @@ class URLAnalyzer:
             # scoring logic
             if primary_penalty_feature:
                 penalty = feature_weights.get(primary_penalty_feature, -0.7)
-                final_score = (
-                    base_score * 0.3 + positive_feature_score_sum * 0.2 + penalty
-                )
+                final_score = base_score * 0.1 + penalty * 1.1
+
             elif is_oauth:
                 final_score = (
                     0.26
@@ -777,7 +917,71 @@ class URLAnalyzer:
                     + positive_feature_score_sum * 0.70
                     + negative_feature_score_sum,
                 )
-            elif is_redirect and is_file_access:
+            elif is_file_access and is_path_traversal:
+                final_score = min(
+                    0.90,
+                    0.45
+                    + base_score * 0.15
+                    + positive_feature_score_sum * 0.93
+                    + negative_feature_score_sum,
+                )
+            elif is_file_access:
+                calculated_score = (
+                    0.40
+                    + base_score * 0.20
+                    + positive_feature_score_sum * 0.80
+                    + negative_feature_score_sum
+                )
+
+                try:
+                    file_ext = os.path.splitext(parsed.path)[1].lower()
+                    files_to_penalize = {
+                        ".js",
+                        ".css",
+                        ".png",
+                        ".jpg",
+                        ".jpeg",
+                        ".gif",
+                        ".svg",
+                        ".ico",
+                        ".woff",
+                        ".woff2",
+                        ".ttf",
+                        ".eot",
+                        ".pdf",
+                        ".docx",
+                        ".doc",
+                        ".xlsx",
+                        ".xls",
+                        ".pptx",
+                        ".ppt",
+                        ".zip",
+                        ".tar",
+                        ".gz",
+                        ".mp4",
+                        ".webm",
+                        ".ogg",
+                        ".mp3",
+                        ".wav",
+                        ".xml",
+                        ".txt",
+                        ".log",
+                        ".json",
+                        ".csv",
+                    }
+                    # Use 'features' list directly to check for path traversal feature
+                    if (
+                        file_ext in files_to_penalize
+                        and "PATH_TRAVERSAL_PATTERN" not in features
+                    ):
+                        calculated_score = base_score * 0.2
+                except Exception:
+                    # Ignore errors in this secondary check
+                    pass
+
+                final_score = min(0.85, calculated_score)
+
+            elif is_redirect and is_file_access:  # Less likely now but kept as fallback
                 final_score = min(
                     0.72,
                     0.35
@@ -796,9 +1000,9 @@ class URLAnalyzer:
             elif is_general_admin or is_wp_admin:
                 final_score = min(
                     0.65,
-                    0.26
+                    0.45
                     + base_score * 0.2
-                    + positive_feature_score_sum * 0.58
+                    + positive_feature_score_sum * 0.65
                     + negative_feature_score_sum,
                 )
             elif found_high_priority_feature:
@@ -833,10 +1037,18 @@ class URLAnalyzer:
                 )
             elif is_unusual_js:
                 final_score = min(
-                    0.45,
+                    0.40,
                     0.15
                     + base_score * 0.2
-                    + positive_feature_score_sum * 0.6
+                    + positive_feature_score_sum * 0.55
+                    + negative_feature_score_sum,
+                )
+            elif is_api_sensitive:
+                final_score = min(
+                    0.55,
+                    0.25
+                    + base_score * 0.25
+                    + positive_feature_score_sum * 0.65
                     + negative_feature_score_sum,
                 )
             else:
@@ -854,56 +1066,94 @@ class URLAnalyzer:
                 final_score += feature_weights["BORING_PARAMS"]
 
             final_score += random.uniform(-0.005, 0.005)
-            final_score = max(0.01, min(0.95, final_score))
+            final_score = max(MIN_SCORE, min(0.95, final_score))
             adjusted_scores.append((url, final_score))
 
         ranked = sorted(adjusted_scores, key=lambda x: x[1], reverse=True)
 
-        # Diversity logic (uses updated MAX_REPETITIONS from __init__)
+        # Diversity logic
         result = []
         pattern_counts = defaultdict(int)
         feature_counts = defaultdict(int)
+        # Track path structural patterns to penalize repetition
+        path_structure_counts = defaultdict(int)
 
         for url, score in ranked:
-            if score < 0.04:
-                continue
-
             parsed = urlparse(url)
             domain = parsed.netloc
-            path_parts = [p for p in parsed.path.lower().split("/") if p]
+            path_lower = parsed.path.lower()
+            path_parts = [p for p in path_lower.split("/") if p]
             features_str = self._extract_security_features(url)
             features = features_str.split()
 
             primary_feature_key = "DEFAULT"
-            for key in self.MAX_REPETITIONS:
-                if key in features:
-                    primary_feature_key = key
-                    break
+            # Prioritize GENERIC_LOGIN_PATH for its specific counter if present
+            if "GENERIC_LOGIN_PATH" in features:
+                primary_feature_key = "GENERIC_LOGIN_PATH"
+            else:
+                for key in self.MAX_REPETITIONS:
+                    if (
+                        key in features
+                        and key != "DEFAULT"
+                        and key != "GENERIC_LOGIN_PATH"
+                    ):
+                        primary_feature_key = key
+                        break
 
-            part1 = path_parts[0] if len(path_parts) > 0 else ""
-            part2 = path_parts[1] if len(path_parts) > 1 else ""
-            part3 = path_parts[2] if len(path_parts) > 2 else ""
-            path_pattern_key = f"{domain}:{part1}:{part2}:{part3}"
+            adjusted_score = score
+            if primary_feature_key == "DEFAULT":
+                adjusted_score -= 0.10
+                adjusted_score = max(MIN_SCORE, adjusted_score)
+
+            simplified_path_parts = []
+
+            variable_pattern = re.compile(
+                r"^[a-f0-9]{8,}$|"  # Hex string (8+ chars)
+                r"^\d+$|"  # Number (any length)
+                r"^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$|"  # UUID
+                # Concatenated string for extensions to fix line length
+                r"\.(php|aspx?|jsp|cfm|cgi|pl|py|rb|sh|exe|dll|pdf|docx?|xlsx?|pptx?|"
+                r"zip|tar|gz|rar|sql|bak|log|txt|csv|json|xml|yaml|yml|env|config|conf|"
+                r"pem|key|p12|"
+                r"js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|html?)$"  # Common extensions
+            )
+
+            for part in path_parts:
+                if variable_pattern.search(part):
+                    break
+                simplified_path_parts.append(part)
+
+            num_simplified_parts = len(simplified_path_parts)
+            if num_simplified_parts == 0:
+                path_base = "ROOT"
+            elif num_simplified_parts == 1:
+                path_base = simplified_path_parts[0]
+            elif num_simplified_parts == 2:
+                path_base = ":".join(simplified_path_parts)
+            else:
+                path_base = ":".join(simplified_path_parts[:3])
+
+            path_pattern_key = f"{domain}:{path_base}"
+
+            # Create a more generic structural pattern key ignoring domain
+            # This helps detect repetitive paths across different domains
+            structure_key = ":".join(
+                [p if len(p) < 20 else f"*{len(p)}" for p in simplified_path_parts]
+            )
+
+            # Progressive penalty for repeated structures
+            structure_count = path_structure_counts.get(structure_key, 0)
+            if structure_count > 0:
+                # Apply increasingly stronger penalties for each repetition
+                repetition_penalty = min(0.15 * structure_count, 0.60)
+                adjusted_score -= repetition_penalty
+                adjusted_score = max(MIN_SCORE, adjusted_score)
 
             max_feature_allowed = self.MAX_REPETITIONS.get(
                 primary_feature_key, self.MAX_REPETITIONS["DEFAULT"]
             )
 
-            is_heavily_penalized = any(
-                f in features
-                for f in [
-                    "ROBOTS_TXT",
-                    "COMMON_DOC_FILENAME",
-                    "WELL_KNOWN_SECURITY_TXT",
-                    "PLAIN_HTML_FILE",
-                    "ICON_SVG_STATIC",
-                    "SURVEY_PATH",
-                    "IS_STATIC_OVERRIDE",
-                    "TRACKING_ENDPOINT",
-                    "UTM_PARAMS",
-                ]
-            )
-            max_path_allowed = 1 if (score < 0.2 or is_heavily_penalized) else 4
+            max_path_allowed = 1
 
             current_feature_count = feature_counts.get(primary_feature_key, 0)
             current_path_count = pattern_counts.get(path_pattern_key, 0)
@@ -914,9 +1164,11 @@ class URLAnalyzer:
             ):
                 continue
 
-            result.append((url, score))
+            result.append((url, adjusted_score))
             feature_counts[primary_feature_key] = current_feature_count + 1
             pattern_counts[path_pattern_key] = current_path_count + 1
+            # Increment the structure counter
+            path_structure_counts[structure_key] = structure_count + 1
 
         return sorted(result, key=lambda x: x[1], reverse=True)
 
@@ -929,7 +1181,6 @@ class URLAnalyzer:
         """
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         joblib.dump(self.model, model_path)
-        print(f"Model saved to {model_path}")
 
 
 def extract_url_features(url: str) -> Dict[str, Any]:
@@ -970,12 +1221,39 @@ def extract_url_features(url: str) -> Dict[str, Any]:
     return features
 
 
-def process_url_file(file_path: str) -> List[str]:
+def contains_cyrillic(text: str) -> bool:
+    """
+    Check if the provided text contains Cyrillic characters.
+
+    Args:
+        text: String to check for Cyrillic characters
+
+    Returns:
+        True if Cyrillic characters are found, False otherwise
+    """
+    # Cyrillic Unicode ranges
+    # Basic Cyrillic: U+0400 to U+04FF
+    # Extended Cyrillic: U+0500 to U+052F
+    # Supplementary Cyrillic: U+2DE0 to U+2DFF
+    cyrillic_pattern = re.compile(r"[\u0400-\u04FF\u0500-\u052F\u2DE0-\u2DFF]")
+    return bool(cyrillic_pattern.search(text))
+
+
+def display_cyrillic_warning() -> None:
+    """Display warning message for files containing Cyrillic characters."""
+    print("\nWARNING: Provided input contains Cyrillic characters.")
+    print("If you see broken output, try running:")
+    print("    export PYTHONIOENCODING=utf-8")
+    print("in your terminal before running this script.\n")
+
+
+def process_url_file(file_path: str, quiet: bool = False) -> List[str]:
     """
     Read URLs from a file, one per line.
 
     Args:
         file_path: Path to the file containing URLs
+        quiet: If True, suppress informational messages
 
     Returns:
         List of URLs read from the file
@@ -986,22 +1264,45 @@ def process_url_file(file_path: str) -> List[str]:
     try:
         file_size = os.path.getsize(file_path)
 
-        # Use buffered reading for large files
-        if file_size > LARGE_FILE_THRESHOLD:
+        def read_urls_from_file(
+            file_path: str, show_progress: bool = False
+        ) -> Tuple[List[str], bool]:
+            """
+            Read URLs from a file and check for Cyrillic characters.
+
+            Args:
+                file_path: Path to the file containing URLs
+                show_progress: Whether to show progress for large files
+
+            Returns:
+                Tuple of (list of URLs, whether file contains Cyrillic characters)
+            """
             urls = []
+            has_cyrillic = False
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     line = line.strip()
                     if line:
                         urls.append(line)
+                        if not has_cyrillic and contains_cyrillic(line):
+                            has_cyrillic = True
 
-                    if len(urls) % URL_READ_PROGRESS_INTERVAL == 0:
+                    if show_progress and len(urls) % URL_READ_PROGRESS_INTERVAL == 0:
                         print(f"Read {len(urls)} URLs so far...")
 
-            return urls
+            return urls, has_cyrillic
+
+        # Use buffered reading for large files
+        if file_size > LARGE_FILE_THRESHOLD:
+            print("Large dataset provided. This may take a while...")
+            urls, has_cyrillic = read_urls_from_file(file_path, show_progress=True)
         else:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                return [line.strip() for line in f if line.strip()]
+            urls, has_cyrillic = read_urls_from_file(file_path)
+
+        if has_cyrillic and not quiet:
+            display_cyrillic_warning()
+
+        return urls
     except FileNotFoundError:
         print(f"Error: File '{file_path}' not found.")
         return []
@@ -1059,6 +1360,31 @@ def setup_utf8_stdout():
         print(f"Warning: Could not configure stdout for UTF-8: {e}", file=sys.stderr)
 
 
+def read_from_stdin() -> Tuple[List[str], bool]:
+    """
+    Read URLs from stdin.
+
+    Returns:
+        Tuple of (list of URLs, whether stdin contains Cyrillic characters)
+    """
+    urls = []
+    has_cyrillic = False
+    try:
+        stdin_wrapper = io.TextIOWrapper(
+            sys.stdin.buffer, encoding="utf-8", errors="replace"
+        )
+        for line in stdin_wrapper:
+            line_stripped = line.strip()
+            if line_stripped:
+                urls.append(line_stripped)
+                if not has_cyrillic and contains_cyrillic(line_stripped):
+                    has_cyrillic = True
+    except Exception as e:
+        print(f"Error reading from stdin: {e}", file=sys.stderr)
+
+    return urls, has_cyrillic
+
+
 def main() -> None:
     """
     Command-line interface for the URL analyzer.
@@ -1095,7 +1421,7 @@ def main() -> None:
         parser.add_argument(
             "--sample-size",
             type=int,
-            default=100,
+            default=2000,
             help="Number of sample URLs to generate (when using --generate-sample)",
         )
         parser.add_argument(
@@ -1104,13 +1430,45 @@ def main() -> None:
             help="Output file for sample data (when using --generate-sample)",
         )
         parser.add_argument(
-            "--quiet", action="store_true", help="Suppress progress messages"
+            "--setup",
+            action="store_true",
+            help="Generate sample data and train the model in one step (accepts --sample-size)",
+        )
+        parser.add_argument(
+            "-q", "--quiet", action="store_true", help="Suppress progress messages"
+        )
+        parser.add_argument(
+            "-o", "--outfile", help="Save results to a file instead of stdout"
         )
 
         args = parser.parse_args()
 
         if not args.quiet:
             setup_utf8_stdout()
+
+        if args.setup:
+            print("Setting up with sample data and training the model...")
+            os.makedirs("data", exist_ok=True)
+            os.makedirs("models", exist_ok=True)
+
+            sample_file = generate_sample_data(
+                "data/sample_training_data.csv", num_samples=args.sample_size
+            )
+            print(
+                f"Generated sample training data with {args.sample_size} URLs at: {sample_file}"
+            )
+
+            analyzer = URLAnalyzer(args.model, quiet=args.quiet)
+            train_df = pd.read_csv(sample_file)
+            urls = train_df["url"].tolist()
+            labels = train_df["is_interesting"].tolist()
+
+            analyzer.train(urls, labels)
+            analyzer.save_model(args.model)
+            print(f"Model trained and saved to {args.model}")
+            print("\nSetup complete! To analyze URLs, run:")
+            print("python intrigue.py -f path/to/urls.txt")
+            return
 
         if args.generate_sample:
             sample_file = generate_sample_data(args.sample_output, args.sample_size)
@@ -1140,7 +1498,9 @@ def main() -> None:
                     generate_sample_data(sample_file)
                     print(f"Generated sample training data at: {sample_file}")
 
-        analyzer = URLAnalyzer(args.model if os.path.exists(args.model) else None)
+        analyzer = URLAnalyzer(
+            args.model if os.path.exists(args.model) else None, quiet=args.quiet
+        )
 
         if args.train:
             if not args.train_file:
@@ -1154,7 +1514,10 @@ def main() -> None:
 
                 analyzer.train(urls, labels)
                 analyzer.save_model(args.model)
-                print(f"Model trained and saved to {args.model}")
+                print(
+                    f"""Model trained and saved to {args.model}\n
+To analyze URLs, run: python intrigue.py -f path/to/urls.txt"""
+                )
             except FileNotFoundError:
                 print(f"Error: Training data file '{args.train_file}' not found.")
             except Exception as e:
@@ -1166,25 +1529,25 @@ def main() -> None:
                 if not args.quiet:
                     print(f"Reading URLs from {args.file}...")
                     sys.stdout.flush()
-                urls = process_url_file(args.file)
+                urls = process_url_file(args.file, quiet=args.quiet)
                 if not args.quiet:
                     print(f"Loaded {len(urls)} URLs.")
                     sys.stdout.flush()
             elif args.url:
                 urls = [args.url]
+                if contains_cyrillic(args.url) and not args.quiet:
+                    display_cyrillic_warning()
             else:
                 if stdin_has_data:
                     if not args.quiet:
                         print("Reading URLs from stdin...")
                         sys.stdout.flush()
-                    try:
-                        stdin_wrapper = io.TextIOWrapper(
-                            sys.stdin.buffer, encoding="utf-8", errors="replace"
-                        )
-                        urls = [line.strip() for line in stdin_wrapper if line.strip()]
-                    except Exception as e:
-                        print(f"Error reading from stdin: {e}", file=sys.stderr)
-                        urls = []
+
+                    urls, has_cyrillic = read_from_stdin()
+
+                    if has_cyrillic and not args.quiet:
+                        display_cyrillic_warning()
+
                     if not args.quiet:
                         print(f"Loaded {len(urls)} URLs.")
                         sys.stdout.flush()
@@ -1196,20 +1559,42 @@ def main() -> None:
 
             try:
                 if not args.quiet and len(urls) > 1000:
-                    print(
-                        f"Analyzing {len(urls)} URLs... This may take a while for large datasets."
-                    )
+                    print("Analyzing...")
                     sys.stdout.flush()
 
                 ranked_urls = analyzer.rank_urls(urls, args.top)
 
-                if not args.quiet:
-                    print("\nAnalysis complete. Top potentially interesting URLs:")
+                if args.url:
+                    header = "Analysis result for the provided URL:"
+                    url, score = ranked_urls[0]
+                    output_lines = [f"[{score:.4f}] {url}"]
                 else:
-                    print("\nTop potentially interesting URLs:")
-                sys.stdout.flush()
-                for i, (url, score) in enumerate(ranked_urls, 1):
-                    print(f"{i}. [{score:.4f}] {url}")
+                    header = "Top potentially interesting URLs:"
+                    output_lines = []
+                    for i, (url, score) in enumerate(ranked_urls, 1):
+                        output_lines.append(f"{i}. [{score:.4f}] {url}")
+
+                if args.outfile:
+                    try:
+                        outfile_dir = os.path.dirname(args.outfile)
+                        if outfile_dir:
+                            os.makedirs(outfile_dir, exist_ok=True)
+                        with open(args.outfile, "w", encoding="utf-8") as f:
+                            f.write(header + "\n")
+                            for line in output_lines:
+                                f.write(line + "\n")
+                        if not args.quiet:
+                            print(f"Results saved to {args.outfile}")
+                    except IOError as e:
+                        print(
+                            f"Error writing results to file {args.outfile}: {e}",
+                            file=sys.stderr,
+                        )
+                else:
+                    print(f"\n{header}")
+                    sys.stdout.flush()
+                    for line in output_lines:
+                        print(line)
 
             except NotFittedError:
                 display_training_instructions()
