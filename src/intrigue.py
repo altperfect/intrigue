@@ -2019,11 +2019,4 @@ To analyze URLs, run: python intrigue.py -f path/to/urls.txt"""
 
 
 if __name__ == "__main__":
-    from time import time
-
-    start_time = time()
-
     main()
-
-    end_time = time()
-    print(f"Time taken: {end_time - start_time} seconds")

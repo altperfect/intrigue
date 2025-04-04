@@ -1,0 +1,5 @@
+https://example.com/products
+https://example.com/admin/users
+https://example.com/api/v1/users?id=1
+https://example.com/login?redirect=https://example.com/profile
+https://example.com/download?file=/report.pdf
