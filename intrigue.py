@@ -1,5 +1,6 @@
 import argparse
 import concurrent.futures
+import functools
 import io
 import os
 import random
@@ -44,26 +45,7 @@ class URLAnalyzer:
             quiet: If True, suppress informational messages like model loading.
         """
         self.quiet = quiet
-        self._features_cache = {}  # Cache for extracted features
-
-        # Patterns for quick filtering of uninteresting URLs
-        self.UNINTERESTING_PATTERNS = [
-            # Static resources
-            r"\.(jpg|jpeg|png|gif|svg|ico|css|woff|woff2|ttf|eot|map)(\?|$)",
-            r"/(images|img|static|assets|styles|css|js|fonts|dist|build)/",
-            # Analytics and tracking
-            r"/(analytics|pixel|beacon|tracking|utm)/",
-            r"(google-analytics|googletagmanager|facebook\.com/tr)",
-            # Common tracking parameters
-            r"[?&](utm_source|utm_medium|utm_campaign|utm_term|utm_content|fbclid|gclid)=",
-            # Other clearly uninteresting paths
-            r"/(sitemap\.xml|robots\.txt|favicon\.ico)(\?|$)",
-        ]
-
-        # Compile regex for faster matching
-        self.uninteresting_regex = re.compile(
-            "|".join(self.UNINTERESTING_PATTERNS), re.IGNORECASE
-        )
+        self._features_cache = {}
 
         if model_path and os.path.exists(model_path):
             try:
@@ -84,6 +66,23 @@ class URLAnalyzer:
             "GENERIC_LOGIN_PATH": 4,
             "DEFAULT": 30,
         }
+
+        # Patterns for quick termination of clearly uninteresting URLs
+        self.UNINTERESTING_PATTERNS = [
+            # Static resources
+            r"\.(jpg|jpeg|png|gif|svg|ico|css|woff|woff2|ttf|eot|map)(\?|$)",
+            r"/(images|img|static|assets|styles|css|js|fonts|dist|build)/",
+            # Analytics and tracking
+            r"/(analytics|pixel|beacon|tracking|utm)/",
+            r"(google-analytics|googletagmanager|facebook\.com/tr)",
+            # Common tracking parameters
+            r"[?&](utm_source|utm_medium|utm_campaign|utm_term|utm_content|fbclid|gclid)=",
+            # Other clearly uninteresting paths
+            r"/(sitemap\.xml|robots\.txt|favicon\.ico)(\?|$)",
+        ]
+        self.uninteresting_regex = re.compile(
+            "|".join(self.UNINTERESTING_PATTERNS), re.IGNORECASE
+        )
 
     def _create_new_model(self) -> None:
         """Create a new pipeline for URL analysis."""
@@ -134,8 +133,15 @@ class URLAnalyzer:
 
     def _extract_security_features(self, url: str) -> str:
         """Extract security-specific features from a URL and format as a string."""
+        early_term = self._check_early_termination(url)
+        if early_term:
+            return early_term
+
+        if url in self._features_cache:
+            return self._features_cache[url]
+
         try:
-            parsed = urlparse(url)
+            parsed = self._parse_url(url)
             path = parsed.path.lower()
             query = parsed.query
             params = parse_qs(query)
@@ -148,6 +154,23 @@ class URLAnalyzer:
         features = []
         file_ext = os.path.splitext(cleaned_path)[1].lower()
         filename = os.path.basename(cleaned_path).lower()
+
+        if file_ext in {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".css",
+            ".js",
+            ".ico",
+            ".svg",
+            ".woff",
+            ".woff2",
+            ".ttf",
+        }:
+            result = "STATIC_RESOURCE"
+            self._features_cache[url] = result
+            return result
 
         path_context = self._extract_path_context(path)
         features.extend([f for f in path_context.values() if f and isinstance(f, str)])
@@ -184,7 +207,9 @@ class URLAnalyzer:
         )
         features.extend(static_features)
 
-        return " ".join(features)
+        result = " ".join(features)
+        self._features_cache[url] = result
+        return result
 
     def _extract_path_context(self, path: str) -> Dict[str, str]:
         """Extract path context information to guide feature extraction."""
@@ -794,41 +819,69 @@ class URLAnalyzer:
 
         return features
 
-    def _check_early_termination(self, url: str) -> Optional[str]:
+    def _quick_filter(self, urls: List[str]) -> List[str]:
         """
-        Check if a URL should be terminated early as uninteresting.
+        Perform quick initial filtering on URLs to identify potentially interesting candidates.
 
         Args:
-            url: URL to check
+            urls: List of URLs to filter
 
         Returns:
-            Feature string for uninteresting URLs, None if URL should be analyzed
+            List of URLs that passed the quick filter
         """
-        # Skip clearly uninteresting URLs (static resources, tracking endpoints)
-        if self.uninteresting_regex.search(url):
-            return "EARLY_TERMINATED"
-        return None
+        # Use a set for fast lookups when we have lots of URLs
+        interesting_indicators_set = {
+            "/api/",
+            "/admin/",
+            "/auth/",
+            "/login/",
+            "/config",
+            "password",
+            "token",
+            "key",
+            "secret",
+            "/.well-known/",
+            "/oauth",
+            "/debug",
+            "/upload",
+            "/download",
+            "/file",
+        }
 
-    def _cached_extract_features(self, url: str) -> str:
-        """
-        Extract features from a URL with caching to avoid redundant processing.
+        candidates = []
+        batch_size = 10000  # Process URLs in batches to reduce memory usage
 
-        Args:
-            url: URL to extract features from
+        for i in range(0, len(urls), batch_size):
+            batch = urls[i : i + batch_size]  # noqa: E203
+            batch_candidates = []
 
-        Returns:
-            Extracted features as a space-separated string
-        """
-        early_term = self._check_early_termination(url)
-        if early_term:
-            return early_term
+            for url in batch:
+                if self.uninteresting_regex.search(url):
+                    continue
 
-        if url in self._features_cache:
-            return self._features_cache[url]
+                url_lower = url.lower()
 
-        features = self._extract_security_features(url)
-        self._features_cache[url] = features
-        return features
+                if any(
+                    indicator in url_lower for indicator in interesting_indicators_set
+                ):
+                    batch_candidates.append(url)
+                    continue
+
+                if "?" in url_lower and "=" in url_lower:
+                    batch_candidates.append(url)
+                    continue
+
+                if any(
+                    ext in url_lower
+                    for ext in [".jpg", ".jpeg", ".png", ".gif", ".css", ".js"]
+                ):
+                    continue
+
+                batch_candidates.append(url)
+
+            candidates.extend(batch_candidates)
+
+        return candidates
 
     def _process_url_batch(self, batch: List[str]) -> List[Tuple[str, float]]:
         """
@@ -842,11 +895,12 @@ class URLAnalyzer:
         """
         batch_enhanced = []
         for url in batch:
-            features = self._cached_extract_features(url)
+            features = self._extract_security_features(url)
             enhanced_url = f"{url} {features}"
             batch_enhanced.append(enhanced_url)
 
         batch_probs = self.model.predict_proba(batch_enhanced)
+
         return [(url, prob[1]) for url, prob in zip(batch, batch_probs)]
 
     def rank_urls(self, urls: List[str], top_n: int = 10) -> List[Tuple[str, float]]:
@@ -860,45 +914,64 @@ class URLAnalyzer:
         Returns:
             List of (url, score) tuples sorted by score in descending order
         """
-        BATCH_SIZE = 5000
-        MAX_WORKERS = min(32, os.cpu_count() or 4)
-        SMALL_DATASET_THRESHOLD = 100
-
         if not urls:
             return []
 
+        unique_urls = list(dict.fromkeys(urls))
+
+        if not self.quiet:
+            print(f"Processing {len(unique_urls)} unique URLs out of {len(urls)} total")
+
+        potential_candidates = self._quick_filter(unique_urls)
+
+        if not self.quiet:
+            print(
+                f"Quick filter reduced {len(unique_urls)} URLs to {len(potential_candidates)} candidates"
+            )
+
+        SMALL_DATASET_THRESHOLD = 100
+        MAX_WORKERS = min(32, os.cpu_count() or 4)
+
         try:
-            unique_urls = list(dict.fromkeys(urls))
-            all_scores = []
+            if len(potential_candidates) <= SMALL_DATASET_THRESHOLD:
+                all_scores = self._process_url_batch(potential_candidates)
+            else:
+                all_scores = []
 
-            # For small datasets, don't use parallelization
-            if len(unique_urls) < SMALL_DATASET_THRESHOLD:
-                return self._ensure_diversity(self._process_url_batch(unique_urls))[
-                    :top_n
-                ]
-
-            # For larger datasets, use parallel processing with batching
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=MAX_WORKERS
-            ) as executor:
-                # Create batches
+                # Split processing into smaller chunks to avoid memory issues
+                chunk_size = min(
+                    5000, max(100, len(potential_candidates) // (MAX_WORKERS * 2))
+                )
                 batches = [
-                    unique_urls[i : i + BATCH_SIZE]  # noqa: E203
-                    for i in range(0, len(unique_urls), BATCH_SIZE)
+                    potential_candidates[i : i + chunk_size]  # noqa: E203
+                    for i in range(0, len(potential_candidates), chunk_size)
                 ]
 
-                # Process batches in parallel
-                future_to_batch = {
-                    executor.submit(self._process_url_batch, batch): batch
-                    for batch in batches
-                }
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=MAX_WORKERS
+                    ) as executor:
+                        futures = []
+                        for batch in batches:
+                            future = executor.submit(self._process_url_batch, batch)
+                            futures.append(future)
 
-                for future in concurrent.futures.as_completed(future_to_batch):
-                    try:
-                        batch_scores = future.result()
+                        for future in concurrent.futures.as_completed(futures):
+                            try:
+                                batch_scores = future.result()
+                                all_scores.extend(batch_scores)
+                            except Exception as exc:
+                                print(f"Batch processing generated an exception: {exc}")
+                except Exception as e:
+                    # Fall back to sequential processing if parallel processing fails
+                    if not self.quiet:
+                        print(
+                            f"Warning: Parallel processing failed ({str(e)}). Falling back to sequential processing."
+                        )
+                    all_scores = []
+                    for batch in batches:
+                        batch_scores = self._process_url_batch(batch)
                         all_scores.extend(batch_scores)
-                    except Exception as exc:
-                        print(f"Batch processing generated an exception: {exc}")
 
             ranked_diverse = self._ensure_diversity(all_scores)
             return ranked_diverse[:top_n]
@@ -1058,9 +1131,14 @@ class URLAnalyzer:
 
         adjusted_scores = []
         for url, initial_score in url_scores:
-            features_str = self._extract_security_features(url)
+            # Use cached features if available, otherwise extract them
+            features_str = self._features_cache.get(
+                url
+            ) or self._extract_security_features(url)
             features = features_str.split()
-            parsed = urlparse(url)
+
+            # Use cached URL parsing
+            parsed = self._parse_url(url)
 
             base_score = 0.15 + (initial_score * 0.35)
 
@@ -1405,6 +1483,35 @@ class URLAnalyzer:
         """
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         joblib.dump(self.model, model_path)
+
+    @functools.lru_cache(maxsize=10000)
+    def _parse_url(self, url: str):
+        """
+        Parse URL with caching for better performance.
+
+        Args:
+            url: URL to parse
+
+        Returns:
+            Parsed URL object
+        """
+        return urlparse(url)
+
+    def _check_early_termination(self, url: str) -> Optional[str]:
+        """
+        Check if a URL should be terminated early as uninteresting.
+
+        Args:
+            url: URL to check
+
+        Returns:
+            Feature string for uninteresting URLs, None if URL should be analyzed
+        """
+        # Fast check for common static resources and tracking URLs
+        if self.uninteresting_regex.search(url):
+            return "EARLY_TERMINATED STATIC_RESOURCE"
+
+        return None
 
 
 def extract_url_features(url: str) -> Dict[str, Any]:
