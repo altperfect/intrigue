@@ -974,7 +974,6 @@ class URLAnalyzer:
                         all_scores.extend(batch_scores)
 
             ranked_diverse = self._ensure_diversity(all_scores)
-
             return ranked_diverse[:top_n]
         except NotFittedError:
             raise NotFittedError(
@@ -1563,10 +1562,6 @@ def contains_cyrillic(text: str) -> bool:
     Returns:
         True if Cyrillic characters are found, False otherwise
     """
-    # Cyrillic Unicode ranges
-    # Basic Cyrillic: U+0400 to U+04FF
-    # Extended Cyrillic: U+0500 to U+052F
-    # Supplementary Cyrillic: U+2DE0 to U+2DFF
     cyrillic_pattern = re.compile(r"[\u0400-\u04FF\u0500-\u052F\u2DE0-\u2DFF]")
     return bool(cyrillic_pattern.search(text))
 
@@ -1830,9 +1825,7 @@ def main() -> None:
                     generate_sample_data(sample_file)
                     print(f"Generated sample training data at: {sample_file}")
 
-        analyzer = URLAnalyzer(
-            args.model if os.path.exists(args.model) else None, quiet=args.quiet
-        )
+        analyzer = URLAnalyzer(args.model, quiet=args.quiet)
 
         if args.train:
             if not args.train_file:
