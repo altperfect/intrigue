@@ -1,4 +1,4 @@
-# ML analyzer for ranking interesting URLs from offensive security perspective
+# ML URL analyzer
 
 A tool that helps offensive security specialists to identify potentially interesting URLs from a large set of collected URLs.
 
