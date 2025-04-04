@@ -128,6 +128,45 @@ class URLAnalyzer:
         file_ext = os.path.splitext(cleaned_path)[1].lower()
         filename = os.path.basename(cleaned_path).lower()
 
+        path_context = self._extract_path_context(path)
+        features.extend([f for f in path_context.values() if f and isinstance(f, str)])
+
+        tracking_features = self._extract_tracking_features(path, params)
+        features.extend(tracking_features)
+
+        if path_context["is_static_override"]:
+            features.append("IS_STATIC_OVERRIDE")
+
+        if any(lp in path for lp in LOCALIZATION_PATHS):
+            features.append("LOCALIZATION_FILE")
+
+        high_priority_features = self._extract_high_priority_features(
+            path, params, tracking_features
+        )
+        features.extend(high_priority_features)
+
+        file_features = self._extract_file_features(
+            path, filename, file_ext, tracking_features, path_context
+        )
+        features.extend(file_features)
+
+        auth_features = self._extract_auth_features(
+            path, params, tracking_features, file_features
+        )
+        features.extend(auth_features)
+
+        api_features = self._extract_api_features(path, tracking_features, path_context)
+        features.extend(api_features)
+
+        static_features = self._extract_static_features(
+            path, file_ext, filename, tracking_features, path_context, file_features
+        )
+        features.extend(static_features)
+
+        return " ".join(features)
+
+    def _extract_path_context(self, path: str) -> Dict[str, str]:
+        """Extract path context information to guide feature extraction."""
         static_indicators = STATIC_INDICATORS_FOR_FEATURE_EXTRACTION
         content_paths = [
             "/blog/",
@@ -148,6 +187,7 @@ class URLAnalyzer:
             "/reference/",
         ]
         survey_paths = ["/survey", "/feedback"]
+
         is_likely_static_path = any(
             indicator in path for indicator in static_indicators
         )
@@ -159,8 +199,43 @@ class URLAnalyzer:
         is_dev_docs_path = any(dp in path for dp in dev_docs_paths)
         is_survey_path = any(sp in path for sp in survey_paths)
         is_static_override = is_likely_static_path or is_svg_icon_path
+        is_wp_admin_path = path.startswith("/wp-admin/")
 
-        # tracking/metrics/utm detection
+        result = {
+            "is_likely_static_path": is_likely_static_path,
+            "is_svg_icon_path": is_svg_icon_path,
+            "is_content_path": is_content_path,
+            "is_support_path": "SUPPORT_PATH" if is_support_path else "",
+            "is_dev_docs_path": is_dev_docs_path,
+            "is_survey_path": (
+                "SURVEY_PATH"
+                if is_survey_path and "TRACKING_ENDPOINT" not in path
+                else ""
+            ),
+            "is_static_override": is_static_override,
+            "is_wp_admin_path": is_wp_admin_path,
+        }
+
+        # Low priority paths
+        if any(lp in path for lp in LOW_PRIORITY_PATHS):
+            result["low_priority_path"] = "LOW_PRIORITY_PATH"
+
+        # Special paths
+        if path.endswith("/certificate/private"):
+            result["certificate_private"] = "CERTIFICATE_PRIVATE_PATH"
+
+        if path.endswith("/managers"):
+            result["managers_path"] = "MANAGERS_PATH"
+
+        return result
+
+    def _extract_tracking_features(
+        self, path: str, params: Dict[str, List[str]]
+    ) -> List[str]:
+        """Extract tracking-related features from a URL."""
+        features = []
+
+        # Tracking/metrics/UTM detection
         tracking_paths = [
             "/track-event",
             "/pixel",
@@ -203,6 +278,7 @@ class URLAnalyzer:
             "state",
             "RelayState",
         ]
+
         for param_name, values in params.items():
             if param_name.lower() in relevant_params_for_value_check:
                 for value in values:
@@ -218,21 +294,23 @@ class URLAnalyzer:
             features.append("TRACKING_ENDPOINT")
         if has_utm_params:
             features.append("UTM_PARAMS")
-            is_tracking = True
         if has_promo_params:
             features.append("PROMO_PARAMS")
-            is_tracking = True
         if tracking_in_value:
             features.append("TRACKING_INDICATOR_IN_VALUE")
-            is_tracking = True
 
-        if is_static_override:
-            features.append("IS_STATIC_OVERRIDE")
+        return features
 
-        if any(lp in path for lp in LOCALIZATION_PATHS):
-            features.append("LOCALIZATION_FILE")
+    def _extract_high_priority_features(
+        self, path: str, params: Dict[str, List[str]], tracking_features: List[str]
+    ) -> List[str]:
+        """Extract high priority security features from URL parameters."""
+        features = []
+        is_tracking = any(
+            f in ["TRACKING_ENDPOINT", "UTM_PARAMS", "PROMO_PARAMS"]
+            for f in tracking_features
+        )
 
-        # high priority features
         redirect_params = [
             "redirect",
             "redirect_uri",
@@ -263,7 +341,7 @@ class URLAnalyzer:
                         break
                 if (
                     is_ssrf_or_redirect_candidate
-                    and "TRACKING_ENDPOINT" not in features
+                    and "TRACKING_ENDPOINT" not in tracking_features
                 ):
                     features.append("SSRF_REDIRECT_CANDIDATE")
                     break
@@ -299,6 +377,20 @@ class URLAnalyzer:
             elif param_lower in simple_query_params:
                 if not is_tracking:
                     features.append(f"SIMPLE_QUERY_PARAM:{param_lower}")
+
+        return features
+
+    def _extract_file_features(
+        self,
+        path: str,
+        filename: str,
+        file_ext: str,
+        tracking_features: List[str],
+        path_context: Dict[str, str],
+    ) -> List[str]:
+        """Extract features related to file extensions and sensitive files."""
+        features = []
+        is_wp_admin_path = path_context.get("is_wp_admin_path", False)
 
         high_priority_exts = [
             ".sql",
@@ -344,10 +436,8 @@ class URLAnalyzer:
             "theme-editor.php",
         ]
 
-        is_wp_admin_path = path.startswith("/wp-admin/")
-
         if file_ext in high_priority_exts:
-            if "TRACKING_ENDPOINT" not in features:
+            if "TRACKING_ENDPOINT" not in tracking_features:
                 features.append(f"HIGH_PRIORITY_EXT:{file_ext}")
         elif file_ext in medium_priority_exts:
             if file_ext in [".json", ".xml"] and any(
@@ -355,14 +445,14 @@ class URLAnalyzer:
             ):
                 features.append("STATIC_DATA_FILE")
             else:
-                if "TRACKING_ENDPOINT" not in features:
+                if "TRACKING_ENDPOINT" not in tracking_features:
                     features.append(f"MEDIUM_PRIORITY_EXT:{file_ext}")
         elif file_ext in low_priority_exts:
-            if "TRACKING_ENDPOINT" not in features:
+            if "TRACKING_ENDPOINT" not in tracking_features:
                 features.append(f"LOW_PRIORITY_EXT:{file_ext}")
 
         if filename in sensitive_filenames:
-            if "TRACKING_ENDPOINT" not in features:
+            if "TRACKING_ENDPOINT" not in tracking_features:
                 features.append(f"SENSITIVE_FILENAME:{filename}")
             if filename == "wp-config.php":
                 features.append("WP_CONFIG_FILE")
@@ -385,18 +475,46 @@ class URLAnalyzer:
         if any(fp in path for fp in file_paths):
             features.append("FILE_ACCESS_PATH")
             if (
-                "../" in url
-                or "%2e%2e%2f" in url.lower()
-                or "..\\" in url
-                or "%2e%2e\\" in url.lower()
+                "../" in path
+                or "%2e%2e%2f" in path.lower()
+                or "..\\" in path
+                or "%2e%2e\\" in path.lower()
             ):
                 features.append("PATH_TRAVERSAL_PATTERN")
 
         if is_wp_admin_path and filename in wp_admin_sensitive_files:
-            if "TRACKING_ENDPOINT" not in features:
+            if "TRACKING_ENDPOINT" not in tracking_features:
                 features.append("WP_ADMIN_SENSITIVE_FILE")
 
-        # medium priority features
+        if filename == "robots.txt":
+            features.append("ROBOTS_TXT")
+
+        common_doc_names = [
+            "license",
+            "privacy",
+            "terms",
+            "oferta",
+            "offer",
+            "security-policy",
+        ]
+        if filename.split(".")[0] in common_doc_names:
+            features.append("COMMON_DOC_FILENAME")
+
+        if file_ext in IMAGE_EXTENSIONS:
+            features.append("IMAGE_FILE")
+
+        return features
+
+    def _extract_auth_features(
+        self,
+        path: str,
+        params: Dict[str, List[str]],
+        tracking_features: List[str],
+        file_features: List[str],
+    ) -> List[str]:
+        """Extract authentication and OAuth flow related features."""
+        features = []
+
         oidc_oauth_paths = [
             "/connect/authorize",
             "/oauth/authorize",
@@ -417,30 +535,33 @@ class URLAnalyzer:
             "samlrequest",
             "samlresponse",
         ]
+
         is_oidc_flow = False
-        if (
-            "TRACKING_ENDPOINT" not in features
-            and any(p in path for p in oidc_oauth_paths)
+        if "TRACKING_ENDPOINT" not in tracking_features and (
+            any(p in path for p in oidc_oauth_paths)
             or any(p in params for p in oidc_oauth_params)
         ):
             features.append("OAUTH_SAML_FLOW")
             is_oidc_flow = True
 
             # Check for GENERIC_LOGIN_PATH: OAuth flow is true, but no higher priority features are present
+            high_priority_features = [
+                "SSRF_REDIRECT_URL_IN_PARAM",
+                "SSRF_REDIRECT_CANDIDATE",
+                "DANGEROUS_PARAM",
+                "PATH_TRAVERSAL_PATTERN",
+                "SENSITIVE_FILENAME",
+                "HIGH_PRIORITY_EXT",
+                "WP_CONFIG_FILE",
+                "WP_ADMIN_SENSITIVE_FILE",
+                "WP_ADMIN_AREA",
+            ]
+
             is_high_priority = any(
-                f in features
-                for f in [
-                    "SSRF_REDIRECT_URL_IN_PARAM",
-                    "SSRF_REDIRECT_CANDIDATE",
-                    "DANGEROUS_PARAM",
-                    "PATH_TRAVERSAL_PATTERN",
-                    "SENSITIVE_FILENAME",
-                    "HIGH_PRIORITY_EXT",
-                    "WP_CONFIG_FILE",
-                    "WP_ADMIN_SENSITIVE_FILE",
-                    "WP_ADMIN_AREA",  # WP Admin itself is high enough priority
-                ]
+                f in file_features or any(hpf in f for hpf in high_priority_features)
+                for f in file_features
             )
+
             # Check if it's one of the specific common login paths
             is_common_login_path = any(
                 p == path
@@ -450,7 +571,7 @@ class URLAnalyzer:
                     "/auth",
                     "/account/login",
                     "/user/login",
-                    # Also check common patterns like /v*/login
+                    # API version patterns
                     "/v1/login",
                     "/v2/login",
                     "/v3/login",
@@ -460,22 +581,26 @@ class URLAnalyzer:
                     "/v1/auth",
                     "/v2/auth",
                     "/v3/auth",
-                    # Check for login within common auth directories
+                    # Auth directory patterns
                     "/connect/login",
                     "/oauth/login",
                     "/oidc/login",
                     "/saml/login",
-                    # Handle cases like /login.aspx
+                    # File extension patterns
                     "/login.aspx",
                     "/signin.aspx",
-                    "/Authenticate.aspx",  # Added .aspx variants
+                    "/Authenticate.aspx",
                 ]
             )
 
             if is_common_login_path and not is_high_priority:
                 features.append("GENERIC_LOGIN_PATH")
 
-        if "TRACKING_ENDPOINT" not in features and path.startswith("/.well-known/"):
+        # .well-known directory checks
+        if "TRACKING_ENDPOINT" not in tracking_features and path.startswith(
+            "/.well-known/"
+        ):
+            filename = os.path.basename(path.rstrip("/")).lower()
             if filename == "openid-configuration":
                 if not is_oidc_flow:
                     features.append("WELL_KNOWN_OPENID_CONFIG")
@@ -484,7 +609,25 @@ class URLAnalyzer:
             else:
                 features.append("WELL_KNOWN_STATIC")
 
-        if not is_tracking and file_ext == ".js":
+        return features
+
+    def _extract_api_features(
+        self, path: str, tracking_features: List[str], path_context: Dict[str, str]
+    ) -> List[str]:
+        """Extract API and admin-related features."""
+        features = []
+        is_tracking_present = (
+            "TRACKING_ENDPOINT" in tracking_features
+            or "UTM_PARAMS" in tracking_features
+            or "PROMO_PARAMS" in tracking_features
+        )
+        is_dev_docs_path = path_context.get("is_dev_docs_path", False)
+        is_likely_static_path = path_context.get("is_likely_static_path", False)
+        is_wp_admin_path = path_context.get("is_wp_admin_path", False)
+
+        # Check for JS files
+        file_ext = os.path.splitext(path)[1].lower()
+        if not is_tracking_present and file_ext == ".js":
             if re.search(r"\.[a-f0-9]{8,}\.js$", path):
                 features.append("HASHED_JS_FILE")
             elif is_dev_docs_path:
@@ -503,6 +646,7 @@ class URLAnalyzer:
                     "chunk",
                     "vendor",
                 ]
+                filename = os.path.basename(path).lower()
                 is_common_name = any(common in filename for common in common_js)
                 is_common_path = any(
                     p in path for p in ["/js/", "/static/", "/assets/", "/dist/"]
@@ -531,21 +675,20 @@ class URLAnalyzer:
                 ]
             )
         ]
-        is_wp_admin_path = path.startswith("/wp-admin/")
+
         if any(ap in path for ap in admin_paths) and is_likely_static_path:
             features.append("STATIC_ADMIN_INDICATOR")
         elif is_wp_admin_path:
-            if not is_tracking:
+            if not is_tracking_present:
                 features.append("WP_ADMIN_AREA")
         elif any(ap in path for ap in admin_paths):
-            if not is_tracking:
+            if not is_tracking_present:
                 features.append("ADMIN_AREA")
 
-        if "TRACKING_ENDPOINT" not in features and (
+        if "TRACKING_ENDPOINT" not in tracking_features and (
             "/api/" in path or "/rest/" in path or "/graphql" in path
         ):
             features.append("API_ENDPOINT")
-
             sensitive_api_keywords = [
                 "token",
                 "key",
@@ -562,43 +705,35 @@ class URLAnalyzer:
             if any(keyword in path for keyword in sensitive_api_keywords):
                 features.append("API_SENSITIVE_KEYWORD")
 
-        if is_dev_docs_path and not is_tracking:
+        # Developer documentation
+        if is_dev_docs_path and not is_tracking_present:
             if any(kw in path for kw in ["/com/", "/objects/", "/tools/"]):
                 features.append("DEV_DOCS_TOOLS_PATH")
             else:
                 features.append("DEV_DOCS_GENERIC_PATH")
 
-        # low priority / context / penalties
-        if any(lp in path for lp in LOW_PRIORITY_PATHS):
-            features.append("LOW_PRIORITY_PATH")
+        return features
 
-        if is_support_path:
-            features.append("SUPPORT_PATH")
+    def _extract_static_features(
+        self,
+        path: str,
+        file_ext: str,
+        filename: str,
+        tracking_features: List[str],
+        path_context: Dict[str, str],
+        file_features: List[str],
+    ) -> List[str]:
+        """Extract static resource and content page features."""
+        features = []
+        is_tracking_present = (
+            "TRACKING_ENDPOINT" in tracking_features
+            or "UTM_PARAMS" in tracking_features
+            or "PROMO_PARAMS" in tracking_features
+        )
+        is_static_override = path_context.get("is_static_override", False)
+        is_content_path = path_context.get("is_content_path", False)
+        is_dev_docs_path = path_context.get("is_dev_docs_path", False)
 
-        if is_survey_path and "TRACKING_ENDPOINT" not in features:
-            features.append("SURVEY_PATH")
-
-        if path.endswith("/certificate/private"):
-            features.append("CERTIFICATE_PRIVATE_PATH")
-
-        if path.endswith("/managers"):
-            features.append("MANAGERS_PATH")
-
-        if filename == "robots.txt":
-            features.append("ROBOTS_TXT")
-
-        common_doc_names = [
-            "license",
-            "privacy",
-            "terms",
-            "oferta",
-            "offer",
-            "security-policy",
-        ]
-        if filename.split(".")[0] in common_doc_names:
-            features.append("COMMON_DOC_FILENAME")
-
-        # final static/content page identification
         static_exts = [
             ".css",
             ".png",
@@ -614,14 +749,16 @@ class URLAnalyzer:
             ".html",
             ".htm",
         ]
+
+        # Final static/content page identification
         if (
-            not is_tracking
-            and "COMMON_JS_FILE" not in features
-            and "HASHED_JS_FILE" not in features
-            and "ROBOTS_TXT" not in features
-            and "COMMON_DOC_FILENAME" not in features
+            not is_tracking_present
+            and "COMMON_JS_FILE" not in file_features
+            and "HASHED_JS_FILE" not in file_features
+            and "ROBOTS_TXT" not in file_features
+            and "COMMON_DOC_FILENAME" not in file_features
         ):
-            if "IS_STATIC_OVERRIDE" in features and file_ext == ".svg":
+            if "IS_STATIC_OVERRIDE" in path_context.values() and file_ext == ".svg":
                 features.append("ICON_SVG_STATIC")
             elif is_static_override or file_ext in static_exts:
                 if file_ext in [".html", ".htm"]:
@@ -631,14 +768,10 @@ class URLAnalyzer:
                         features.append("PLAIN_HTML_FILE")
                 elif "ICON_SVG_STATIC" not in features:
                     features.append("STATIC_RESOURCE")
-
             elif is_content_path:
                 features.append("CONTENT_PAGE")
 
-        if file_ext in IMAGE_EXTENSIONS:
-            features.append("IMAGE_FILE")
-
-        return " ".join(features)
+        return features
 
     def rank_urls(self, urls: List[str], top_n: int = 10) -> List[Tuple[str, float]]:
         """
