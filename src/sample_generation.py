@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import pandas as pd
 
-from constants import (
+from src.constants import (
     ADMIN_PATH_SEGMENTS,
     API_PATH_SEGMENTS,
     AUTH_PATH_SEGMENTS,

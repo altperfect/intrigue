@@ -1,6 +1,6 @@
 import pytest
 
-from intrigue import URLAnalyzer
+from src.intrigue import URLAnalyzer
 
 
 @pytest.fixture(scope="session")

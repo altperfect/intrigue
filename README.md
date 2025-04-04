@@ -13,8 +13,20 @@ The tool uses machine learning to:
 
 ## Installation
 
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management.
+
 ```bash
-pip install -r requirements.txt
+# Install uv if you don't have it
+pip install uv
+
+# Install dependencies
+uv pip install -r requirements.txt
+
+# For development (includes pytest)
+uv pip install -r requirements-dev.txt
+
+# Create and activate a virtual environment
+uv venv
 ```
 
 ## Usage
