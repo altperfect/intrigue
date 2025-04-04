@@ -1,15 +1,5 @@
 from urllib.parse import parse_qs, urlparse
 
-import pytest
-
-from intrigue import URLAnalyzer
-
-
-@pytest.fixture
-def analyzer():
-    """Create a new URLAnalyzer instance for each test."""
-    return URLAnalyzer(quiet=True)
-
 
 def test_extract_path_context(analyzer):
     """Test path context extraction functions."""
