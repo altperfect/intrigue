@@ -1,5 +1,7 @@
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 
 def test_extract_path_context(analyzer):
     """Test path context extraction functions."""
@@ -80,20 +82,27 @@ def test_extract_auth_features(analyzer):
     assert "OAUTH_SAML_FLOW" in auth_features
 
 
-def test_extract_api_features(analyzer):
+@pytest.mark.parametrize(
+    "url,expected_features",
+    [
+        (
+            "https://example.com/api/v1/users",
+            ["API_ENDPOINT"],
+        ),
+        (
+            "https://example.com/api/v1/tokens",
+            ["API_ENDPOINT", "API_SENSITIVE_KEYWORD"],
+        ),
+    ],
+)
+def test_extract_api_features(analyzer, url, expected_features):
     """Test API feature extraction."""
-    api_url = "https://example.com/api/v1/users"
-    parsed = urlparse(api_url)
+    parsed = urlparse(url)
     path_context = analyzer._extract_path_context(parsed.path)
     api_features = analyzer._extract_api_features(parsed.path, [], path_context)
-    assert "API_ENDPOINT" in api_features
 
-    sensitive_api_url = "https://example.com/api/v1/tokens"
-    parsed = urlparse(sensitive_api_url)
-    path_context = analyzer._extract_path_context(parsed.path)
-    api_features = analyzer._extract_api_features(parsed.path, [], path_context)
-    assert "API_ENDPOINT" in api_features
-    assert "API_SENSITIVE_KEYWORD" in api_features
+    for feature in expected_features:
+        assert feature in api_features
 
 
 def test_extract_static_features(analyzer):
@@ -104,4 +113,5 @@ def test_extract_static_features(analyzer):
     static_features = analyzer._extract_static_features(
         parsed.path, ".css", "styles.css", [], path_context, []
     )
+    assert "STATIC_RESOURCE" in static_features
     assert "STATIC_RESOURCE" in static_features

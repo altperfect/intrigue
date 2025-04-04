@@ -46,6 +46,7 @@ class URLAnalyzer:
         """
         self.quiet = quiet
         self._features_cache = {}
+        self.use_quick_filter = True
 
         if model_path and os.path.exists(model_path):
             try:
@@ -893,6 +894,9 @@ class URLAnalyzer:
         Returns:
             List of (url, score) tuples
         """
+        if not batch:
+            return []
+
         batch_enhanced = []
         for url in batch:
             features = self._extract_security_features(url)
@@ -922,12 +926,24 @@ class URLAnalyzer:
         if not self.quiet:
             print(f"Processing {len(unique_urls)} unique URLs out of {len(urls)} total")
 
-        potential_candidates = self._quick_filter(unique_urls)
+        use_quick_filter = getattr(self, "use_quick_filter", True)
 
-        if not self.quiet:
-            print(
-                f"Quick filter reduced {len(unique_urls)} URLs to {len(potential_candidates)} candidates"
-            )
+        if use_quick_filter:
+            potential_candidates = self._quick_filter(unique_urls)
+
+            if not self.quiet:
+                print(
+                    f"Quick filter reduced {len(unique_urls)} URLs to {len(potential_candidates)} candidates"
+                )
+                if len(potential_candidates) < min(len(unique_urls), top_n):
+                    print(
+                        "Note: Quick filter significantly reduced the number of candidates. "
+                        "For more comprehensive results, use thorough analysis mode."
+                    )
+        else:
+            potential_candidates = unique_urls
+            if not self.quiet:
+                print("Thorough analysis mode: analyzing all URLs (may take longer)")
 
         SMALL_DATASET_THRESHOLD = 100
         MAX_WORKERS = min(32, os.cpu_count() or 4)
@@ -1126,8 +1142,6 @@ class URLAnalyzer:
             "LOCALIZATION_FILE": -0.80,
             "IMAGE_FILE": -0.90,
         }
-
-        MIN_SCORE = 0.01
 
         adjusted_scores = []
         for url, initial_score in url_scores:
@@ -1366,6 +1380,8 @@ class URLAnalyzer:
                 and primary_penalty_feature is None
             ):
                 final_score += feature_weights["BORING_PARAMS"]
+
+            MIN_SCORE = 0.01
 
             final_score += random.uniform(-0.005, 0.005)
             final_score = max(MIN_SCORE, min(0.95, final_score))
@@ -1766,6 +1782,11 @@ def main() -> None:
         )
         parser.add_argument(
             "-o", "--outfile", help="Save results to a file instead of stdout"
+        )
+        parser.add_argument(
+            "--thorough",
+            action="store_true",
+            help="Disable quick filtering and analyze all URLs thoroughly (slower)",
         )
 
         args = parser.parse_args()

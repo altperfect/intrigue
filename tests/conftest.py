@@ -21,3 +21,14 @@ def trained_analyzer(analyzer):
     sample_labels = [1, 1, 0, 0]
     analyzer.train(sample_urls, sample_labels)
     return analyzer
+
+
+@pytest.fixture
+def thorough_analyzer(trained_analyzer):
+    """Temporarily disable quick filtering on the analyzer for thorough testing."""
+    original_setting = trained_analyzer.use_quick_filter
+    trained_analyzer.use_quick_filter = False
+
+    yield trained_analyzer
+
+    trained_analyzer.use_quick_filter = original_setting
