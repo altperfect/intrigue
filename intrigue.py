@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures
 import io
 import os
 import random
@@ -43,6 +44,26 @@ class URLAnalyzer:
             quiet: If True, suppress informational messages like model loading.
         """
         self.quiet = quiet
+        self._features_cache = {}  # Cache for extracted features
+
+        # Patterns for quick filtering of uninteresting URLs
+        self.UNINTERESTING_PATTERNS = [
+            # Static resources
+            r"\.(jpg|jpeg|png|gif|svg|ico|css|woff|woff2|ttf|eot|map)(\?|$)",
+            r"/(images|img|static|assets|styles|css|js|fonts|dist|build)/",
+            # Analytics and tracking
+            r"/(analytics|pixel|beacon|tracking|utm)/",
+            r"(google-analytics|googletagmanager|facebook\.com/tr)",
+            # Common tracking parameters
+            r"[?&](utm_source|utm_medium|utm_campaign|utm_term|utm_content|fbclid|gclid)=",
+            # Other clearly uninteresting paths
+            r"/(sitemap\.xml|robots\.txt|favicon\.ico)(\?|$)",
+        ]
+
+        # Compile regex for faster matching
+        self.uninteresting_regex = re.compile(
+            "|".join(self.UNINTERESTING_PATTERNS), re.IGNORECASE
+        )
 
         if model_path and os.path.exists(model_path):
             try:
@@ -773,6 +794,61 @@ class URLAnalyzer:
 
         return features
 
+    def _check_early_termination(self, url: str) -> Optional[str]:
+        """
+        Check if a URL should be terminated early as uninteresting.
+
+        Args:
+            url: URL to check
+
+        Returns:
+            Feature string for uninteresting URLs, None if URL should be analyzed
+        """
+        # Skip clearly uninteresting URLs (static resources, tracking endpoints)
+        if self.uninteresting_regex.search(url):
+            return "EARLY_TERMINATED"
+        return None
+
+    def _cached_extract_features(self, url: str) -> str:
+        """
+        Extract features from a URL with caching to avoid redundant processing.
+
+        Args:
+            url: URL to extract features from
+
+        Returns:
+            Extracted features as a space-separated string
+        """
+        early_term = self._check_early_termination(url)
+        if early_term:
+            return early_term
+
+        if url in self._features_cache:
+            return self._features_cache[url]
+
+        features = self._extract_security_features(url)
+        self._features_cache[url] = features
+        return features
+
+    def _process_url_batch(self, batch: List[str]) -> List[Tuple[str, float]]:
+        """
+        Process a batch of URLs to extract features and get prediction scores.
+
+        Args:
+            batch: List of URLs to process
+
+        Returns:
+            List of (url, score) tuples
+        """
+        batch_enhanced = []
+        for url in batch:
+            features = self._cached_extract_features(url)
+            enhanced_url = f"{url} {features}"
+            batch_enhanced.append(enhanced_url)
+
+        batch_probs = self.model.predict_proba(batch_enhanced)
+        return [(url, prob[1]) for url, prob in zip(batch, batch_probs)]
+
     def rank_urls(self, urls: List[str], top_n: int = 10) -> List[Tuple[str, float]]:
         """
         Rank URLs by their security interestingness.
@@ -785,31 +861,46 @@ class URLAnalyzer:
             List of (url, score) tuples sorted by score in descending order
         """
         BATCH_SIZE = 5000
+        MAX_WORKERS = min(32, os.cpu_count() or 4)
+        SMALL_DATASET_THRESHOLD = 100
 
         if not urls:
             return []
 
         try:
             unique_urls = list(dict.fromkeys(urls))
-
             all_scores = []
 
-            for i in range(0, len(unique_urls), BATCH_SIZE):
-                batch = unique_urls[i : i + BATCH_SIZE]  # noqa: E203
+            # For small datasets, don't use parallelization
+            if len(unique_urls) < SMALL_DATASET_THRESHOLD:
+                return self._ensure_diversity(self._process_url_batch(unique_urls))[
+                    :top_n
+                ]
 
-                batch_enhanced = []
-                for url in batch:
-                    features = self._extract_security_features(url)
-                    enhanced_url = f"{url} {features}"
-                    batch_enhanced.append(enhanced_url)
+            # For larger datasets, use parallel processing with batching
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=MAX_WORKERS
+            ) as executor:
+                # Create batches
+                batches = [
+                    unique_urls[i : i + BATCH_SIZE]  # noqa: E203
+                    for i in range(0, len(unique_urls), BATCH_SIZE)
+                ]
 
-                batch_probs = self.model.predict_proba(batch_enhanced)
+                # Process batches in parallel
+                future_to_batch = {
+                    executor.submit(self._process_url_batch, batch): batch
+                    for batch in batches
+                }
 
-                batch_scores = [(url, prob[1]) for url, prob in zip(batch, batch_probs)]
-                all_scores.extend(batch_scores)
+                for future in concurrent.futures.as_completed(future_to_batch):
+                    try:
+                        batch_scores = future.result()
+                        all_scores.extend(batch_scores)
+                    except Exception as exc:
+                        print(f"Batch processing generated an exception: {exc}")
 
             ranked_diverse = self._ensure_diversity(all_scores)
-
             return ranked_diverse[:top_n]
         except NotFittedError:
             raise NotFittedError(
@@ -1364,10 +1455,6 @@ def contains_cyrillic(text: str) -> bool:
     Returns:
         True if Cyrillic characters are found, False otherwise
     """
-    # Cyrillic Unicode ranges
-    # Basic Cyrillic: U+0400 to U+04FF
-    # Extended Cyrillic: U+0500 to U+052F
-    # Supplementary Cyrillic: U+2DE0 to U+2DFF
     cyrillic_pattern = re.compile(r"[\u0400-\u04FF\u0500-\u052F\u2DE0-\u2DFF]")
     return bool(cyrillic_pattern.search(text))
 
@@ -1631,9 +1718,7 @@ def main() -> None:
                     generate_sample_data(sample_file)
                     print(f"Generated sample training data at: {sample_file}")
 
-        analyzer = URLAnalyzer(
-            args.model if os.path.exists(args.model) else None, quiet=args.quiet
-        )
+        analyzer = URLAnalyzer(args.model, quiet=args.quiet)
 
         if args.train:
             if not args.train_file:
