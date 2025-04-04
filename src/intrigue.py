@@ -17,15 +17,20 @@ from sklearn.exceptions import NotFittedError
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import Pipeline
 
-from constants import (
+from src.constants import (
+    BORING_PARAMS,
+    COMMON_FILE_EXTENSIONS,
+    FILES_TO_PENALIZE,
     IMAGE_EXTENSIONS,
+    INTERESTING_FILE_EXTENSIONS,
     INTERESTING_PARAMS,
     INTERESTING_PATHS,
     LOCALIZATION_PATHS,
     LOW_PRIORITY_PATHS,
     STATIC_INDICATORS_FOR_FEATURE_EXTRACTION,
+    URL_VALUE_PARAMS,
 )
-from sample_generation import generate_sample_data
+from src.sample_generation import generate_sample_data
 
 
 class URLAnalyzer:
@@ -46,6 +51,7 @@ class URLAnalyzer:
         """
         self.quiet = quiet
         self._features_cache = {}
+        self.use_quick_filter = True
 
         if model_path and os.path.exists(model_path):
             try:
@@ -67,17 +73,48 @@ class URLAnalyzer:
             "DEFAULT": 30,
         }
 
-        # Patterns for quick termination of clearly uninteresting URLs
+        static_ext_pattern = (
+            r"\.("
+            + r"|".join(
+                ext[1:]
+                for ext in IMAGE_EXTENSIONS
+                + [".css", ".woff", ".woff2", ".ttf", ".eot", ".map"]
+            )
+            + r")(\?|$)"
+        )
+
+        static_dir_pattern = (
+            r"/("
+            + r"|".join(
+                dir.strip("/")
+                for dir in STATIC_INDICATORS_FOR_FEATURE_EXTRACTION
+                + ["/dist/", "/build/"]
+            )
+            + r")/"
+        )
+
+        tracking_params_pattern = (
+            r"[?&]("
+            + r"|".join(
+                [
+                    "utm_source",
+                    "utm_medium",
+                    "utm_campaign",
+                    "utm_term",
+                    "utm_content",
+                    "fbclid",
+                    "gclid",
+                ]
+            )
+            + r")="
+        )
+
         self.UNINTERESTING_PATTERNS = [
-            # Static resources
-            r"\.(jpg|jpeg|png|gif|svg|ico|css|woff|woff2|ttf|eot|map)(\?|$)",
-            r"/(images|img|static|assets|styles|css|js|fonts|dist|build)/",
-            # Analytics and tracking
+            static_ext_pattern,
+            static_dir_pattern,
             r"/(analytics|pixel|beacon|tracking|utm)/",
             r"(google-analytics|googletagmanager|facebook\.com/tr)",
-            # Common tracking parameters
-            r"[?&](utm_source|utm_medium|utm_campaign|utm_term|utm_content|fbclid|gclid)=",
-            # Other clearly uninteresting paths
+            tracking_params_pattern,
             r"/(sitemap\.xml|robots\.txt|favicon\.ico)(\?|$)",
         ]
         self.uninteresting_regex = re.compile(
@@ -140,6 +177,20 @@ class URLAnalyzer:
         if url in self._features_cache:
             return self._features_cache[url]
 
+        url_lower = url.lower()
+        if any(
+            ext in url_lower
+            for ext in IMAGE_EXTENSIONS + [".css", ".woff", ".woff2", ".ttf", ".eot"]
+        ):
+            result = "STATIC_RESOURCE IMAGE_FILE EARLY_TERMINATED"
+            self._features_cache[url] = result
+            return result
+
+        if any(path in url_lower for path in STATIC_INDICATORS_FOR_FEATURE_EXTRACTION):
+            result = "STATIC_RESOURCE STATIC_PATH EARLY_TERMINATED"
+            self._features_cache[url] = result
+            return result
+
         try:
             parsed = self._parse_url(url)
             path = parsed.path.lower()
@@ -160,13 +211,13 @@ class URLAnalyzer:
             ".jpeg",
             ".png",
             ".gif",
-            ".css",
-            ".js",
-            ".ico",
             ".svg",
+            ".ico",
+            ".css",
             ".woff",
             ".woff2",
             ".ttf",
+            ".eot",
         }:
             result = "STATIC_RESOURCE"
             self._features_cache[url] = result
@@ -262,11 +313,9 @@ class URLAnalyzer:
             "is_wp_admin_path": is_wp_admin_path,
         }
 
-        # Low priority paths
         if any(lp in path for lp in LOW_PRIORITY_PATHS):
             result["low_priority_path"] = "LOW_PRIORITY_PATH"
 
-        # Special paths
         if path.endswith("/certificate/private"):
             result["certificate_private"] = "CERTIFICATE_PRIVATE_PATH"
 
@@ -281,7 +330,6 @@ class URLAnalyzer:
         """Extract tracking-related features from a URL."""
         features = []
 
-        # Tracking/metrics/UTM detection
         tracking_paths = [
             "/track-event",
             "/pixel",
@@ -358,18 +406,22 @@ class URLAnalyzer:
         )
 
         redirect_params = [
-            "redirect",
-            "redirect_uri",
-            "return",
-            "returnurl",
-            "back",
-            "next",
-            "url",
-            "target",
-            "dest",
-            "goto",
-            "continue",
+            param
+            for param in URL_VALUE_PARAMS
+            if any(
+                term in param
+                for term in [
+                    "redirect",
+                    "return",
+                    "url",
+                    "target",
+                    "dest",
+                    "goto",
+                    "continue",
+                ]
+            )
         ]
+
         is_ssrf_or_redirect_candidate = False
         for param_name in params.keys():
             if any(
@@ -393,21 +445,32 @@ class URLAnalyzer:
                     break
 
         dangerous_params = [
-            "cmd",
-            "exec",
-            "command",
-            "run",
-            "system",
-            "shell",
-            "ping",
-            "sql",
-            "select",
-            "insert",
-            "update",
-            "delete",
-            "union",
+            param
+            for param in INTERESTING_PARAMS
+            if param
+            in [
+                "cmd",
+                "exec",
+                "command",
+                "run",
+                "system",
+                "shell",
+                "ping",
+                "sql",
+                "select",
+                "insert",
+                "update",
+                "delete",
+                "union",
+            ]
         ]
-        simple_query_params = ["query", "search", "q", "keyword"]
+
+        simple_query_params = [
+            param
+            for param in BORING_PARAMS
+            if param in ["query", "search", "q", "keyword"]
+        ]
+
         for param_name in params.keys():
             param_lower = param_name.lower()
             if param_lower in dangerous_params:
@@ -438,30 +501,39 @@ class URLAnalyzer:
         features = []
         is_wp_admin_path = path_context.get("is_wp_admin_path", False)
 
+        # Use INTERESTING_FILE_EXTENSIONS for priority extensions
         high_priority_exts = [
-            ".sql",
-            ".bak",
-            ".backup",
-            ".env",
-            ".config",
-            ".conf",
-            ".yml",
-            ".yaml",
-            ".pem",
-            ".key",
-            ".p12",
+            ext
+            for ext in INTERESTING_FILE_EXTENSIONS
+            if ext
+            in [
+                ".sql",
+                ".bak",
+                ".backup",
+                ".env",
+                ".config",
+                ".conf",
+                ".yml",
+                ".yaml",
+                ".pem",
+                ".key",
+                ".p12",
+            ]
         ]
+
         medium_priority_exts = [
-            ".zip",
-            ".tar",
-            ".gz",
-            ".log",
-            ".txt",
-            ".csv",
-            ".json",
-            ".xml",
+            ext
+            for ext in INTERESTING_FILE_EXTENSIONS
+            if ext in [".zip", ".tar", ".gz", ".log", ".txt", ".csv", ".json", ".xml"]
         ]
-        low_priority_exts = [".pdf", ".doc", ".docx", ".xls", ".xlsx"]
+
+        # Use COMMON_FILE_EXTENSIONS for low priority extensions
+        low_priority_exts = [
+            ext
+            for ext in COMMON_FILE_EXTENSIONS
+            if ext in [".pdf", ".doc", ".docx", ".xls", ".xlsx"]
+        ]
+
         sensitive_filenames = [
             ".git",
             ".svn",
@@ -642,7 +714,6 @@ class URLAnalyzer:
             if is_common_login_path and not is_high_priority:
                 features.append("GENERIC_LOGIN_PATH")
 
-        # .well-known directory checks
         if "TRACKING_ENDPOINT" not in tracking_features and path.startswith(
             "/.well-known/"
         ):
@@ -671,7 +742,6 @@ class URLAnalyzer:
         is_likely_static_path = path_context.get("is_likely_static_path", False)
         is_wp_admin_path = path_context.get("is_wp_admin_path", False)
 
-        # Check for JS files
         file_ext = os.path.splitext(path)[1].lower()
         if not is_tracking_present and file_ext == ".js":
             if re.search(r"\.[a-f0-9]{8,}\.js$", path):
@@ -751,7 +821,6 @@ class URLAnalyzer:
             if any(keyword in path for keyword in sensitive_api_keywords):
                 features.append("API_SENSITIVE_KEYWORD")
 
-        # Developer documentation
         if is_dev_docs_path and not is_tracking_present:
             if any(kw in path for kw in ["/com/", "/objects/", "/tools/"]):
                 features.append("DEV_DOCS_TOOLS_PATH")
@@ -781,22 +850,26 @@ class URLAnalyzer:
         is_dev_docs_path = path_context.get("is_dev_docs_path", False)
 
         static_exts = [
-            ".css",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".svg",
-            ".woff",
-            ".woff2",
-            ".ttf",
-            ".eot",
-            ".ico",
-            ".html",
-            ".htm",
+            ext
+            for ext in COMMON_FILE_EXTENSIONS + IMAGE_EXTENSIONS
+            if ext
+            in [
+                ".css",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".svg",
+                ".woff",
+                ".woff2",
+                ".ttf",
+                ".eot",
+                ".ico",
+                ".html",
+                ".htm",
+            ]
         ]
 
-        # Final static/content page identification
         if (
             not is_tracking_present
             and "COMMON_JS_FILE" not in file_features
@@ -829,7 +902,6 @@ class URLAnalyzer:
         Returns:
             List of URLs that passed the quick filter
         """
-        # Use a set for fast lookups when we have lots of URLs
         interesting_indicators_set = {
             "/api/",
             "/admin/",
@@ -848,6 +920,20 @@ class URLAnalyzer:
             "/file",
         }
 
+        static_extensions = IMAGE_EXTENSIONS + [
+            ".css",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".eot",
+            ".map",
+        ]
+
+        static_dirs = STATIC_INDICATORS_FOR_FEATURE_EXTRACTION + [
+            "/dist/",
+            "/build/",
+        ]
+
         candidates = []
         batch_size = 10000  # Process URLs in batches to reduce memory usage
 
@@ -856,10 +942,16 @@ class URLAnalyzer:
             batch_candidates = []
 
             for url in batch:
-                if self.uninteresting_regex.search(url):
+                url_lower = url.lower()
+
+                if any(ext in url_lower for ext in static_extensions):
                     continue
 
-                url_lower = url.lower()
+                if any(directory in url_lower for directory in static_dirs):
+                    continue
+
+                if self.uninteresting_regex.search(url):
+                    continue
 
                 if any(
                     indicator in url_lower for indicator in interesting_indicators_set
@@ -869,12 +961,6 @@ class URLAnalyzer:
 
                 if "?" in url_lower and "=" in url_lower:
                     batch_candidates.append(url)
-                    continue
-
-                if any(
-                    ext in url_lower
-                    for ext in [".jpg", ".jpeg", ".png", ".gif", ".css", ".js"]
-                ):
                     continue
 
                 batch_candidates.append(url)
@@ -893,6 +979,9 @@ class URLAnalyzer:
         Returns:
             List of (url, score) tuples
         """
+        if not batch:
+            return []
+
         batch_enhanced = []
         for url in batch:
             features = self._extract_security_features(url)
@@ -922,12 +1011,24 @@ class URLAnalyzer:
         if not self.quiet:
             print(f"Processing {len(unique_urls)} unique URLs out of {len(urls)} total")
 
-        potential_candidates = self._quick_filter(unique_urls)
+        use_quick_filter = getattr(self, "use_quick_filter", True)
 
-        if not self.quiet:
-            print(
-                f"Quick filter reduced {len(unique_urls)} URLs to {len(potential_candidates)} candidates"
-            )
+        if use_quick_filter:
+            potential_candidates = self._quick_filter(unique_urls)
+
+            if not self.quiet:
+                print(
+                    f"Quick filter reduced {len(unique_urls)} URLs to {len(potential_candidates)} candidates"
+                )
+                if len(potential_candidates) < min(len(unique_urls), top_n):
+                    print(
+                        "Note: Quick filter significantly reduced the number of candidates. "
+                        "For more comprehensive results, use thorough analysis mode."
+                    )
+        else:
+            potential_candidates = unique_urls
+            if not self.quiet:
+                print("Thorough analysis mode: analyzing all URLs (may take longer)")
 
         SMALL_DATASET_THRESHOLD = 100
         MAX_WORKERS = min(32, os.cpu_count() or 4)
@@ -974,6 +1075,17 @@ class URLAnalyzer:
                         all_scores.extend(batch_scores)
 
             ranked_diverse = self._ensure_diversity(all_scores)
+
+            if (
+                not self.quiet
+                and len(ranked_diverse) < top_n
+                and len(all_scores) >= top_n
+            ):
+                print(
+                    f"\n[!] Note: Diversity enforcement reduced results to {len(ranked_diverse)}. "
+                    "Some similar URLs were filtered to ensure variety in results."
+                )
+
             return ranked_diverse[:top_n]
         except NotFittedError:
             raise NotFittedError(
@@ -1103,7 +1215,8 @@ class URLAnalyzer:
             "UTM_PARAMS": -0.70,
             "SURVEY_PATH": -0.70,
             "BORING_PARAMS": -0.10,
-            "STATIC_RESOURCE": -0.80,
+            "STATIC_RESOURCE": -0.95,
+            "STATIC_PATH": -0.95,
             "PLAIN_HTML_FILE": -0.60,
             "ROBOTS_TXT": -0.80,
             "COMMON_DOC_FILENAME": -0.80,
@@ -1115,7 +1228,7 @@ class URLAnalyzer:
             "DOCS_STATIC_JS": -0.35,
             "CERTIFICATE_PRIVATE_PATH": -0.75,
             "MANAGERS_PATH": -0.45,
-            "ICON_SVG_STATIC": -0.70,
+            "ICON_SVG_STATIC": -0.95,
             "HTML_DOC_IN_DEV_PATH": -0.25,
             "STATIC_DATA_FILE": -0.15,
             "WELL_KNOWN_STATIC": -0.35,
@@ -1124,20 +1237,17 @@ class URLAnalyzer:
             "GENERIC_LOGIN_PATH": -0.20,
             "INVALID_URL": -1.0,
             "LOCALIZATION_FILE": -0.80,
-            "IMAGE_FILE": -0.90,
+            "IMAGE_FILE": -0.99,
+            "EARLY_TERMINATED": -0.98,
         }
-
-        MIN_SCORE = 0.01
 
         adjusted_scores = []
         for url, initial_score in url_scores:
-            # Use cached features if available, otherwise extract them
             features_str = self._features_cache.get(
                 url
             ) or self._extract_security_features(url)
             features = features_str.split()
 
-            # Use cached URL parsing
             parsed = self._parse_url(url)
 
             base_score = 0.15 + (initial_score * 0.35)
@@ -1199,7 +1309,6 @@ class URLAnalyzer:
                     if weight >= 0.18:
                         found_high_priority_feature = True
 
-            # scoring logic
             if primary_penalty_feature:
                 penalty = feature_weights.get(primary_penalty_feature, -0.7)
                 final_score = base_score * 0.1 + penalty * 1.1
@@ -1237,43 +1346,8 @@ class URLAnalyzer:
 
                 try:
                     file_ext = os.path.splitext(parsed.path)[1].lower()
-                    files_to_penalize = {
-                        ".js",
-                        ".css",
-                        ".png",
-                        ".jpg",
-                        ".jpeg",
-                        ".gif",
-                        ".svg",
-                        ".ico",
-                        ".woff",
-                        ".woff2",
-                        ".ttf",
-                        ".eot",
-                        ".pdf",
-                        ".docx",
-                        ".doc",
-                        ".xlsx",
-                        ".xls",
-                        ".pptx",
-                        ".ppt",
-                        ".zip",
-                        ".tar",
-                        ".gz",
-                        ".mp4",
-                        ".webm",
-                        ".ogg",
-                        ".mp3",
-                        ".wav",
-                        ".xml",
-                        ".txt",
-                        ".log",
-                        ".json",
-                        ".csv",
-                    }
-                    # Use 'features' list directly to check for path traversal feature
                     if (
-                        file_ext in files_to_penalize
+                        file_ext in FILES_TO_PENALIZE
                         and "PATH_TRAVERSAL_PATTERN" not in features
                     ):
                         calculated_score = base_score * 0.2
@@ -1367,17 +1441,17 @@ class URLAnalyzer:
             ):
                 final_score += feature_weights["BORING_PARAMS"]
 
+            MIN_SCORE = 0.01
+
             final_score += random.uniform(-0.005, 0.005)
             final_score = max(MIN_SCORE, min(0.95, final_score))
             adjusted_scores.append((url, final_score))
 
         ranked = sorted(adjusted_scores, key=lambda x: x[1], reverse=True)
 
-        # Diversity logic
         result = []
         pattern_counts = defaultdict(int)
         feature_counts = defaultdict(int)
-        # Track path structural patterns to penalize repetition
         path_structure_counts = defaultdict(int)
 
         for url, score in ranked:
@@ -1410,14 +1484,13 @@ class URLAnalyzer:
             simplified_path_parts = []
 
             variable_pattern = re.compile(
-                r"^[a-f0-9]{8,}$|"  # Hex string (8+ chars)
-                r"^\d+$|"  # Number (any length)
-                r"^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$|"  # UUID
-                # Concatenated string for extensions to fix line length
+                r"^[a-f0-9]{8,}$|"
+                r"^\d+$|"
+                r"^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$|"
                 r"\.(php|aspx?|jsp|cfm|cgi|pl|py|rb|sh|exe|dll|pdf|docx?|xlsx?|pptx?|"
                 r"zip|tar|gz|rar|sql|bak|log|txt|csv|json|xml|yaml|yml|env|config|conf|"
                 r"pem|key|p12|"
-                r"js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|html?)$"  # Common extensions
+                r"js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|html?)$"
             )
 
             for part in path_parts:
@@ -1446,7 +1519,6 @@ class URLAnalyzer:
             # Progressive penalty for repeated structures
             structure_count = path_structure_counts.get(structure_key, 0)
             if structure_count > 0:
-                # Apply increasingly stronger penalties for each repetition
                 repetition_penalty = min(0.15 * structure_count, 0.60)
                 adjusted_score -= repetition_penalty
                 adjusted_score = max(MIN_SCORE, adjusted_score)
@@ -1469,7 +1541,6 @@ class URLAnalyzer:
             result.append((url, adjusted_score))
             feature_counts[primary_feature_key] = current_feature_count + 1
             pattern_counts[path_pattern_key] = current_path_count + 1
-            # Increment the structure counter
             path_structure_counts[structure_key] = structure_count + 1
 
         return sorted(result, key=lambda x: x[1], reverse=True)
@@ -1507,7 +1578,6 @@ class URLAnalyzer:
         Returns:
             Feature string for uninteresting URLs, None if URL should be analyzed
         """
-        # Fast check for common static resources and tracking URLs
         if self.uninteresting_regex.search(url):
             return "EARLY_TERMINATED STATIC_RESOURCE"
 
@@ -1568,6 +1638,10 @@ def contains_cyrillic(text: str) -> bool:
 
 def display_cyrillic_warning() -> None:
     """Display warning message for files containing Cyrillic characters."""
+    encoding = os.environ.get("PYTHONIOENCODING", "").lower()
+    if encoding == "utf-8" or encoding == "utf8":
+        return
+
     print("\nWARNING: Provided input contains Cyrillic characters.")
     print("If you see broken output, try running:")
     print("    export PYTHONIOENCODING=utf-8")
@@ -1766,6 +1840,11 @@ def main() -> None:
         )
         parser.add_argument(
             "-o", "--outfile", help="Save results to a file instead of stdout"
+        )
+        parser.add_argument(
+            "--thorough",
+            action="store_true",
+            help="Disable quick filtering and analyze all URLs thoroughly (slower)",
         )
 
         args = parser.parse_args()

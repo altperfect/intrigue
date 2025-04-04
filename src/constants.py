@@ -37,6 +37,7 @@ ADMIN_PATH_SEGMENTS = [
     "config",
     "root",
 ]
+
 API_PATH_SEGMENTS = [
     "api",
     "rest",
@@ -48,6 +49,7 @@ API_PATH_SEGMENTS = [
     "v3",
     "latest",
 ]
+
 AUTH_PATH_SEGMENTS = [
     "auth",
     "account",
@@ -65,6 +67,7 @@ AUTH_PATH_SEGMENTS = [
     "sso",
     "connect",
 ]
+
 FILE_PATH_SEGMENTS = [
     "files",
     "uploads",
@@ -90,6 +93,7 @@ FILE_PATH_SEGMENTS = [
     "common",
     "common-v2",
 ]
+
 COMMON_PATH_SEGMENTS = [
     "search",
     "product",
@@ -205,6 +209,7 @@ INTERESTING_FILE_EXTENSIONS = [
     ".secrets.js",
     ".secrets.yml",
 ]
+
 COMMON_FILE_EXTENSIONS = [
     ".html",
     ".htm",
@@ -954,3 +959,38 @@ IMAGE_EXTENSIONS = [
     ".webp",
     ".logo",
 ]
+
+FILES_TO_PENALIZE = {
+    ".js",
+    ".css",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".xlsx",
+    ".xls",
+    ".pptx",
+    ".ppt",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".mp4",
+    ".webm",
+    ".ogg",
+    ".mp3",
+    ".wav",
+    ".xml",
+    ".txt",
+    ".log",
+    ".json",
+    ".csv",
+}

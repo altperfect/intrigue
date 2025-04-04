@@ -37,14 +37,15 @@ def test_extract_security_features(analyzer, url, expected_features):
         assert feature in features
 
 
-def test_rank_urls_basic_functionality(trained_analyzer):
+def test_rank_urls_basic_functionality(thorough_analyzer):
     """Test that URL ranking returns expected number of results."""
     urls = [
         "https://example.com/",
         "https://example.com/admin/users",
         "https://example.com/assets/main.css",
     ]
-    ranked = trained_analyzer.rank_urls(urls)
+
+    ranked = thorough_analyzer.rank_urls(urls)
     assert len(ranked) == len(urls)
     assert all(isinstance(score, float) for _, score in ranked)
 
@@ -69,9 +70,11 @@ def test_rank_urls_basic_functionality(trained_analyzer):
         ),
     ],
 )
-def test_rank_urls_interest_levels(trained_analyzer, urls, high_interest, low_interest):
+def test_rank_urls_interest_levels(
+    thorough_analyzer, urls, high_interest, low_interest
+):
     """Test that high interest URLs are ranked higher than low interest URLs."""
-    ranked = trained_analyzer.rank_urls(urls)
+    ranked = thorough_analyzer.rank_urls(urls)
     scores = {url: score for url, score in ranked}
 
     assert any(url in scores for url in high_interest)
@@ -81,3 +84,81 @@ def test_rank_urls_interest_levels(trained_analyzer, urls, high_interest, low_in
 
     if high_scores and low_scores:
         assert max(low_scores) < max(high_scores)
+
+
+@pytest.mark.parametrize(
+    "urls,score_threshold",
+    [
+        (
+            [
+                "https://example.com/assets/main.css",
+                "https://example.com/images/logo.png",
+                "https://example.com/styles/theme.css",
+            ],
+            0.05,
+        ),
+    ],
+)
+def test_thorough_mode_static_resource_scoring(
+    thorough_analyzer, urls, score_threshold
+):
+    """Test that static resources are assigned minimal scores with quick filter disabled."""
+    ranked = thorough_analyzer.rank_urls(urls, top_n=len(urls))
+    scores = {url: score for url, score in ranked}
+
+    assert len(scores) == len(urls)
+    for url in urls:
+        assert (
+            scores[url] < score_threshold
+        ), f"Static resource {url} should have a minimal score"
+
+
+@pytest.mark.parametrize(
+    "urls,score_threshold",
+    [
+        (
+            [
+                "https://example.com/login?redirect=https://evil.com",
+                "https://example.com/admin/users",
+            ],
+            0.1,
+        ),
+    ],
+)
+def test_quick_filter_interesting_resource_scoring(
+    trained_analyzer, urls, score_threshold
+):
+    """Test that interesting resources are assigned high scores with quick filter enabled."""
+    ranked = trained_analyzer.rank_urls(urls, top_n=len(urls))
+    scores = {url: score for url, score in ranked}
+
+    assert len(scores) == len(urls)
+    for url in urls:
+        assert (
+            scores[url] > score_threshold
+        ), f"Interesting resource {url} should have a high score"
+
+
+def test_quick_filter_filters_static_resources(trained_analyzer):
+    """Test that quick filter completely filters out static resources but keeps interesting URLs."""
+    static_urls = [
+        "https://example.com/assets/main.css",
+        "https://example.com/images/logo.png",
+        "https://example.com/styles/theme.css",
+    ]
+    interesting_urls = [
+        "https://example.com/login?redirect=https://evil.com",
+        "https://example.com/admin/users",
+    ]
+    all_urls = static_urls + interesting_urls
+
+    trained_analyzer.use_quick_filter = True
+
+    ranked = trained_analyzer.rank_urls(all_urls)
+    result_urls = [url for url, _ in ranked]
+
+    for url in static_urls:
+        assert url not in result_urls, f"Static resource {url} should be filtered out"
+
+    for url in interesting_urls:
+        assert url in result_urls, f"Interesting URL {url} should be kept"
