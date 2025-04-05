@@ -113,6 +113,8 @@ For better results, it's recommended to create your own training data by labelin
 
 ## Example
 
+Using [example_urls.txt](https://github.com/altperfect/intrigue/blob/main/example_urls.txt) for test output.
+
 ```bash
 $ cat example_urls.txt | python src/intrigue.py -q
 
@@ -123,3 +125,7 @@ Top potentially interesting URLs:
 4. [0.2687] https://example.com/api/v1/users?id=1
 5. [0.0864] https://example.com/products
 ```
+
+## Got something to add?
+
+Feel free to contribute or open an issue in case you meet a bug or think of a new feature :)
