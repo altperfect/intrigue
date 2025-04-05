@@ -4,7 +4,7 @@ A tool that helps offensive security specialists to identify potentially interes
 
 ## Overview
 
-During security testing, you might end up with a large list of URLs compiled with crawlers or tools like waybackurls. Manually reviewing all these URLs is time-consuming. This tool helps prioritize the most potentially vulnerable or interesting URLs for security testing.
+During security testing, you often end up with a massive list of URLs from crawlers or tools like waybackurls. Manually reviewing all of them is tedious and slow. This tool uses machine learning to highlight the most interesting and potentially vulnerable URLs — so you can focus on what actually matters.
 
 The tool uses machine learning to:
 1. Analyze URL patterns
