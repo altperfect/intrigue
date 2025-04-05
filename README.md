@@ -104,21 +104,13 @@ For better results, it's recommended to create your own training data by labelin
 
 ## Example
 
-Input:
-```
-https://example.com/products
-https://example.com/admin/users
-https://example.com/api/v1/users?id=1
-https://example.com/login?redirect=https://example.com/profile
-https://example.com/download?file=/report.pdf
-```
+```bash
+$ cat example_urls.txt | python src/intrigue.py -q
 
-Output:
-```
 Top potentially interesting URLs:
-1. [0.6305] https://example.com/login?redirect=https://example.com/profile
-2. [0.5961] https://example.com/download?file=/report.pdf
-3. [0.5094] https://example.com/admin/users
-4. [0.2900] https://example.com/api/v1/users?id=1
-5. [0.1159] https://example.com/products
+1. [0.5945] https://example.com/download?file=/report.pdf
+2. [0.5200] https://example.com/admin/users
+3. [0.4363] https://example.com/login?redirect=https://example.com/profile
+4. [0.2687] https://example.com/api/v1/users?id=1
+5. [0.0864] https://example.com/products
 ```
