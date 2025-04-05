@@ -1,4 +1,4 @@
-# ML URL analyzer
+# intrigue: ML URL analyzer
 
 A tool that helps offensive security specialists to identify potentially interesting URLs from a large set of collected URLs.
 
