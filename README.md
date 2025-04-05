@@ -13,8 +13,14 @@ The tool uses machine learning to:
 
 ## Quickstart
 
+This will:
+1. Install `uv` using the official installation script (assuming you're using Linux, MacOS or Git Bash)
+2. Make the project's setup script executable
+3. Run the script in `source` to preserve exported environment variables
+4. Run the tool to analyze a test URL
+
 ```bash
-pip install uv && \
+curl -LsSf https://astral.sh/uv/install.sh | sh && \
 chmod +x setup.sh && \
 source setup.sh && \
 python src/intrigue.py -u https://example.com/setup?complete=true -q
@@ -29,8 +35,11 @@ This project uses [uv](https://github.com/astral-sh/uv) for dependency managemen
 You can run `setup.sh` to automate the installation process. The only prerequisite is to have `uv` installed.
 
 ```bash
-# Install uv
+# Install uv from pip
 pip install uv
+
+# Or from the installation script
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Or explore other options from here: https://github.com/astral-sh/uv?tab=readme-ov-file#installation
 ```

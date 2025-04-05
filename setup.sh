@@ -6,32 +6,80 @@ command_exists() {
 
 # Check for uv
 echo "[*] Checking for uv..."
-if ! command_exists uv; then
+UV_PATH="$(command -v uv)"
+if [ -z "$UV_PATH" ]; then
     echo "[!] Error: 'uv' command not found."
     echo "[!] This script requires uv for package and environment management."
-    echo "[!] To install uv, run 'pip install uv', or read more from: https://github.com/astral-sh/uv?tab=readme-ov-file#installation"
+    echo ""
+    echo "To install uv, you can use the following commands:"
+    echo "  - (recommended) pip install uv"
+    echo "  - (linux/macos) curl -fsSL https://get.uv.dev | sh"
+    echo "  - (windows) powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\""
+    echo "    Alternatively, refer to the official documentation of uv: https://github.com/astral-sh/uv?tab=readme-ov-file#installation"
     return 1
 fi
-
-echo -e "\t[+] Found uv. Installing dependencies..."
-INSTALL_CMD="uv pip install -r requirements.txt"
-echo "[*] Running: $INSTALL_CMD"
-$INSTALL_CMD
-if [ $? -ne 0 ]; then
-    echo "[!] Error: Dependency installation failed."
-    return 1
-fi
-echo -e "\t[+] Dependencies installed successfully."
+echo -e "\t[+] Using uv found at: $UV_PATH"
 
 # Virtual env setup
 echo "[*] Setting up virtual environment..."
 VENV_DIR=".venv"
+
+# Determine OS type
+OS_TYPE=$(uname -s)
+EXPECTED_ACTIVATE=""
+INCOMPATIBLE_ACTIVATE=""
+
+case "$OS_TYPE" in
+    Linux*|Darwin*)
+        # Linux or macOS
+        EXPECTED_ACTIVATE="$VENV_DIR/bin/activate"
+        INCOMPATIBLE_ACTIVATE="$VENV_DIR/Scripts/activate"
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        # Windows Git Bash, MSYS, Cygwin
+        EXPECTED_ACTIVATE="$VENV_DIR/Scripts/activate"
+        INCOMPATIBLE_ACTIVATE="$VENV_DIR/bin/activate"
+        ;;
+    *)
+        # Unknown OS, default to Linux/macOS style but warn
+        echo "[!] Warning: Unknown OS type. Assuming Linux/macOS activation path."
+        EXPECTED_ACTIVATE="$VENV_DIR/bin/activate"
+        INCOMPATIBLE_ACTIVATE="$VENV_DIR/Scripts/activate"
+        ;;
+esac
+
+# Check if venv already exists and handle if it is incompatible
+NEEDS_RECREATION=false
+if [ -d "$VENV_DIR" ]; then
+    # If the incompatible script path exists OR the expected script path is missing, flag for recreation
+    if [ -f "$INCOMPATIBLE_ACTIVATE" ] || [ ! -f "$EXPECTED_ACTIVATE" ]; then
+         if [ ! -f "$EXPECTED_ACTIVATE" ] && [ ! -f "$INCOMPATIBLE_ACTIVATE" ]; then
+             echo "[!] Existing virtual environment seems incomplete or corrupted (missing activation script)."
+         else
+             echo "[!] Detected potentially incompatible virtual environment structure (found '$INCOMPATIBLE_ACTIVATE' or missing '$EXPECTED_ACTIVATE' for OS type '$OS_TYPE')."
+         fi
+        NEEDS_RECREATION=true
+    fi
+
+    if $NEEDS_RECREATION; then
+        echo "[*] Removing incompatible or corrupted virtual environment: $VENV_DIR"
+        rm -rf "$VENV_DIR"
+        if [ -d "$VENV_DIR" ]; then
+            echo "[!] Error: Failed to remove existing virtual environment directory. Please remove it manually: rm -rf $VENV_DIR"
+            return 1
+        fi
+        echo -e "\t[+] Old virtual environment removed."
+    fi
+fi
+
 if [ ! -d "$VENV_DIR" ]; then
-    echo "[*] Creating virtual environment in '$VENV_DIR'..."
-    VENV_CMD="uv venv $VENV_DIR"
-    $VENV_CMD
-    if [ $? -ne 0 ]; then
-        echo "[!] Error: Virtual environment creation failed."
+    echo "[*] Creating virtual environment..."
+    
+    "$UV_PATH" venv "$VENV_DIR"
+    VENV_EXIT_CODE=$?
+
+    if [ $VENV_EXIT_CODE -ne 0 ]; then
+        echo "[!] Error: Virtual environment creation failed with exit code $VENV_EXIT_CODE."
         return 1
     fi
     echo -e "\t[+] Virtual environment created."
@@ -40,24 +88,15 @@ fi
 # Check if already in an active virtual environment
 ACTIVATED=false
 if [ -z "$VIRTUAL_ENV" ]; then
-    ACTIVATE_SCRIPT=""
-    if [ -f "$VENV_DIR/bin/activate" ]; then
-        ACTIVATE_SCRIPT="$VENV_DIR/bin/activate"
-    elif [ -f "$VENV_DIR/Scripts/activate" ]; then
-        ACTIVATE_SCRIPT="$VENV_DIR/Scripts/activate"
-    fi
-
-    if [ -n "$ACTIVATE_SCRIPT" ]; then
-        echo "[*] Activating virtual environment: source $ACTIVATE_SCRIPT"
-        source "$ACTIVATE_SCRIPT"
+    if [ -f "$EXPECTED_ACTIVATE" ]; then
+        echo "[*] Activating virtual environment: source $EXPECTED_ACTIVATE"
+        source "$EXPECTED_ACTIVATE"
         ACTIVATED=true
     else
-        echo "[!] Warning: Could not automatically determine activation script."
-        echo "[!] Attempting common activation paths failed."
-        echo "[!] If you are not already in the virtual environment, please activate it manually:"
-        echo "  - Linux/macOS: source $VENV_DIR/bin/activate"
-        echo "  - Windows CMD: $VENV_DIR\\Scripts\\activate.bat"
-        echo "  - Windows PowerShell: $VENV_DIR\\Scripts\\Activate.ps1"
+        # This case implies venv creation failed or was corrupted after check
+        echo "[!] Warning: Expected activation script '$EXPECTED_ACTIVATE' not found after setup for OS type '$OS_TYPE'."
+        echo "[!] Please check the virtual environment creation step for errors."
+        echo "[!] Manual activation might be needed. Check .venv/bin or .venv/Scripts for activate script."
     fi
 else
     echo -e "\t[+] Already in a virtual environment: $VENV_DIR"
@@ -70,6 +109,18 @@ if ! $ACTIVATED && [ -z "$VIRTUAL_ENV" ]; then
     return 1
 fi
 
+echo "[*] Installing dependencies..."
+echo "[*] Running: $UV_PATH pip install -r requirements.txt"
+"$UV_PATH" pip install -r requirements.txt
+INSTALL_EXIT_CODE=$?
+
+# Check exit code
+if [ $INSTALL_EXIT_CODE -ne 0 ]; then
+    echo "[!] Error: Dependency installation failed with exit code $INSTALL_EXIT_CODE."
+    return 1
+fi
+echo -e "\t[+] Dependencies installed successfully."
+
 echo "[*] Exporting environment variables for this session..."
 export PYTHONPATH=.
 export PYTHONIOENCODING=utf-8
@@ -77,7 +128,7 @@ echo -e "\t[+] PYTHONPATH set to: $(pwd)"
 echo -e "\t[+] PYTHONIOENCODING set to: $PYTHONIOENCODING"
 
 SAMPLE_SIZE=2000
-echo "[*] Generating sample data ($SAMPLE_SIZE URLs) and training the model..."
+echo "[*] Generating sample data ($SAMPLE_SIZE URLs) and training the model. This may take a moment..."
 
 # Determine python executable (prioritize 'python' within venv)
 PYTHON_CMD=""
@@ -137,7 +188,8 @@ echo " + The model has been trained with $SAMPLE_SIZE sample URLs"
 echo " + The tool has been tested with example URLs"
 echo ""
 echo "Environment variables PYTHONPATH and PYTHONIOENCODING have been set for this terminal session"
-echo "If you open a new terminal, remember to activate the venv and potentially re-export PYTHONPATH: 'export PYTHONPATH=.'"
+echo "If you open a new terminal, remember to activate the venv and potentially re-export PYTHONPATH: 'uv venv && export PYTHONPATH=.'"
+echo "You can also re-run 'source setup.sh' to re-export the environment variables"
 echo ""
 echo "You can now analyze URLs. Example usage:"
 echo "  > $PYTHON_CMD src/intrigue.py -f urls.txt"
