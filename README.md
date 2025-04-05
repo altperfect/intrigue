@@ -11,18 +11,36 @@ The tool uses machine learning to:
 2. Identify paths, parameters, and file extensions associated with vulnerabilities
 3. Rank URLs by their "interestingness" for security testing
 
+## Quickstart
+
+```bash
+pip install uv && \
+chmod +x setup.sh && \
+source setup.sh && \
+python src/intrigue.py -u https://example.com/setup?complete=true -q
+```
+
 ## Installation
 
-This project uses [uv](https://github.com/astral-sh/uv) for dependency management, but `pip` can be used as well.
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management.
 
 ### Using setup.sh
 
-You can run `setup.sh` to automate the installation process.
+You can run `setup.sh` to automate the installation process. The only prerequisite is to have `uv` installed.
+
+```bash
+# Install uv
+pip install uv
+
+# Or explore other options from here: https://github.com/astral-sh/uv?tab=readme-ov-file#installation
+```
 
 ```bash
 chmod +x setup.sh
 
-./setup.sh
+# Important: run with 'source' (not './setup.sh') in order to maintain exported variables
+# The variables are needed to avoid potential issues when running the tool
+source setup.sh
 ```
 
 If you see `Setup complete!` message, then the tool is ready.
@@ -48,7 +66,7 @@ export PYTHONPATH=. && export PYTHONIOENCODING=utf-8
 
 ## Usage
 
-### Basic Usage
+### Basic usage
 
 ```bash
 # Analyze URLs from a file

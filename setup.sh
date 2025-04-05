@@ -1,47 +1,44 @@
-set -e
-
 echo "Starting setup..."
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Install dependencies using uv or pip
-INSTALL_CMD=""
-if command_exists uv; then
-    echo "[+] Found uv. Using uv to install dependencies..."
-    INSTALL_CMD="uv pip install -r requirements.txt"
-elif command_exists pip; then
-    echo "[+] Found pip. Using pip to install dependencies..."
-    INSTALL_CMD="pip install -r requirements.txt"
-else
-    echo "[!] Error: Neither 'uv' nor 'pip' found."
-    echo "[!] Please install uv (recommended) from: https://github.com/astral-sh/uv?tab=readme-ov-file#installation"
-    echo "[!] Or install pip (usually comes with Python)."
-    exit 1
+# Check for uv
+echo "[*] Checking for uv..."
+if ! command_exists uv; then
+    echo "[!] Error: 'uv' command not found."
+    echo "[!] This script requires uv for package and environment management."
+    echo "[!] To install uv, run 'pip install uv', or read more from: https://github.com/astral-sh/uv?tab=readme-ov-file#installation"
+    return 1
 fi
 
+echo -e "\t[+] Found uv. Installing dependencies..."
+INSTALL_CMD="uv pip install -r requirements.txt"
 echo "[*] Running: $INSTALL_CMD"
 $INSTALL_CMD
-echo "[+] Dependencies installed successfully."
+if [ $? -ne 0 ]; then
+    echo "[!] Error: Dependency installation failed."
+    return 1
+fi
+echo -e "\t[+] Dependencies installed successfully."
 
+# Virtual env setup
+echo "[*] Setting up virtual environment..."
 VENV_DIR=".venv"
 if [ ! -d "$VENV_DIR" ]; then
     echo "[*] Creating virtual environment in '$VENV_DIR'..."
-    if command_exists uv; then
-        uv venv "$VENV_DIR"
-    elif command_exists python3; then
-        python3 -m venv "$VENV_DIR"
-    elif command_exists python; then
-        python -m venv "$VENV_DIR"
-    else
-        echo "[!] Error: Cannot create virtual environment. python/python3 command not found."
-        exit 1
+    VENV_CMD="uv venv $VENV_DIR"
+    $VENV_CMD
+    if [ $? -ne 0 ]; then
+        echo "[!] Error: Virtual environment creation failed."
+        return 1
     fi
-    echo "[+] Virtual environment created."
+    echo -e "\t[+] Virtual environment created."
 fi
 
 # Check if already in an active virtual environment
+ACTIVATED=false
 if [ -z "$VIRTUAL_ENV" ]; then
     ACTIVATE_SCRIPT=""
     if [ -f "$VENV_DIR/bin/activate" ]; then
@@ -53,6 +50,7 @@ if [ -z "$VIRTUAL_ENV" ]; then
     if [ -n "$ACTIVATE_SCRIPT" ]; then
         echo "[*] Activating virtual environment: source $ACTIVATE_SCRIPT"
         source "$ACTIVATE_SCRIPT"
+        ACTIVATED=true
     else
         echo "[!] Warning: Could not automatically determine activation script."
         echo "[!] Attempting common activation paths failed."
@@ -62,20 +60,26 @@ if [ -z "$VIRTUAL_ENV" ]; then
         echo "  - Windows PowerShell: $VENV_DIR\\Scripts\\Activate.ps1"
     fi
 else
-    echo "[+] Already in a virtual environment: $VIRTUAL_ENV"
+    echo -e "\t[+] Already in a virtual environment: $VENV_DIR"
+    ACTIVATED=true
 fi
 
+# Exit if activation failed and wasn't already active
+if ! $ACTIVATED && [ -z "$VIRTUAL_ENV" ]; then
+    echo "[!] Error: Could not activate virtual environment. Setup cannot continue safely."
+    return 1
+fi
 
 echo "[*] Exporting environment variables for this session..."
 export PYTHONPATH=.
 export PYTHONIOENCODING=utf-8
-echo "[+] PYTHONPATH set to: $(pwd)"
-echo "[+] PYTHONIOENCODING set to: $PYTHONIOENCODING"
+echo -e "\t[+] PYTHONPATH set to: $(pwd)"
+echo -e "\t[+] PYTHONIOENCODING set to: $PYTHONIOENCODING"
 
-SAMPLE_SIZE=3000
+SAMPLE_SIZE=2000
 echo "[*] Generating sample data ($SAMPLE_SIZE URLs) and training the model..."
 
-# Determine Python executable (prioritize 'python' within venv)
+# Determine python executable (prioritize 'python' within venv)
 PYTHON_CMD=""
 if command_exists python; then
     PYTHON_CMD="python"
@@ -84,14 +88,24 @@ elif command_exists python3; then
     PYTHON_CMD="python3"
     echo "[*] Using 'python3' command as fallback."
 else
-    echo "[!] Error: 'python' or 'python3' command not found. Cannot run the setup command."
-    exit 1
+    echo "[!] Error: 'python' or 'python3' command not found within venv. Cannot run the setup command."
+    return 1
 fi
 
+# Run the setup command to generate sample data and train the model
 echo "[*] Running: $PYTHON_CMD src/intrigue.py --setup --sample-size $SAMPLE_SIZE --quiet"
-echo -e "\n[Tool output will be displayed below]"
-$PYTHON_CMD src/intrigue.py --setup --sample-size $SAMPLE_SIZE | awk 'NF; /^$/{exit}'
-echo -e "[Tool output ends here]\n"
+SETUP_OUTPUT=$($PYTHON_CMD src/intrigue.py --setup --sample-size $SAMPLE_SIZE --quiet 2>&1)
+SETUP_EXIT_CODE=$?
+
+# Check if the setup command failed
+if [ $SETUP_EXIT_CODE -ne 0 ]; then
+    echo "[!] Error: The intrigue.py setup command failed with exit code $SETUP_EXIT_CODE."
+    echo "[!] Output from the command:"
+    echo "$SETUP_OUTPUT"
+    return 1
+else
+    echo -e "\t[+] Model setup and training completed successfully."
+fi
 
 # Test the tool with example URLs
 EXAMPLE_URLS_FILE="example_urls.txt"
@@ -101,7 +115,7 @@ if [ -f "$EXAMPLE_URLS_FILE" ]; then
     TEST_EXIT_CODE=$?
     
     if [ $TEST_EXIT_CODE -eq 0 ]; then
-        echo "[+] Test completed successfully!"
+        echo -e "\t[+] Test completed successfully!"
     else
         echo "[!] Test failed with exit code: $TEST_EXIT_CODE"
         echo "[!] Error output:"
@@ -109,7 +123,7 @@ if [ -f "$EXAMPLE_URLS_FILE" ]; then
         echo ""
         echo "[!] Please review the installation process and fix any errors before proceeding."
         echo "[!] You may need to check that the model was trained correctly and all dependencies are installed."
-        exit 1
+        return 1
     fi
 else
     echo "[!] Warning: $EXAMPLE_URLS_FILE not found. Skipping test."
@@ -143,4 +157,4 @@ echo "  # View all available options"
 echo "  $PYTHON_CMD src/intrigue.py --help"
 echo "-------------------------------------"
 
-exit 0
+return 0
