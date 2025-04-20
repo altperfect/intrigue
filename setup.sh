@@ -1,3 +1,11 @@
+#!/bin/bash
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "[!] Error: This script must be sourced, not run directly."
+    echo -e "\t[->] Run the script using 'source': source setup.sh"
+    exit 1
+fi
+
 echo "Starting setup..."
 
 command_exists() {
