@@ -16,6 +16,8 @@ from src.constants import (
     FILE_PATH_SEGMENTS,
     INTERESTING_FILE_EXTENSIONS,
     INTERESTING_PARAMS,
+    MEDIA_EXTENSIONS,
+    STATIC_INDICATORS_FOR_FEATURE_EXTRACTION,
     URL_VALUE_PARAMS,
     generate_id,
     generate_random_string,
@@ -122,7 +124,15 @@ def _generate_query_string(max_params: int = 5) -> str:
 
 
 def _determine_label(url: str) -> int:
-    """Determine if a generated URL should be labeled interesting (1) or not (0)."""
+    """
+    Determine if a generated URL should be labeled interesting (1) or not (0).
+
+    Args:
+        url: The URL to analyze
+
+    Returns:
+        1 if the URL is likely interesting from a security perspective, 0 otherwise
+    """
     parsed = urlparse(url)
     path = parsed.path.lower()
     query = parsed.query.lower()
@@ -131,15 +141,13 @@ def _determine_label(url: str) -> int:
     file_ext = os.path.splitext(filename)[1]
     path_parts = [p for p in path.split("/") if p]
 
-    negative_paths = [
-        "/support/",
-        "/help/",
-        "/faq/",
-        "/blog/",
-        "/news/",
-        "/articles/",
-        "/events/",
-    ]
+    for static_dir in STATIC_INDICATORS_FOR_FEATURE_EXTRACTION:
+        if static_dir in path:
+            return 0
+
+    if file_ext in MEDIA_EXTENSIONS:
+        return 0
+
     negative_exts = [
         ".css",
         ".png",
@@ -153,25 +161,61 @@ def _determine_label(url: str) -> int:
         ".eot",
         ".ico",
     ]
-    negative_docs = ["terms", "privacy", "license"]
-    if any(np in path for np in negative_paths):
-        return 0
     if file_ext in negative_exts:
         return 0
+
+    negative_paths = [
+        "/support/",
+        "/help/",
+        "/faq/",
+        "/blog/",
+        "/news/",
+        "/articles/",
+        "/events/",
+        "/about/",
+        "/contact/",
+    ]
+    if any(np in path for np in negative_paths):
+        return 0
+
+    negative_docs = ["terms", "privacy", "license", "help", "faq", "about"]
     if any(doc in filename for doc in negative_docs):
         return 0
-    if query and all(p in BORING_PARAMS for p in params.keys()):
-        if not any(
-            p in path_parts
-            for p in ADMIN_PATH_SEGMENTS
-            + API_PATH_SEGMENTS
-            + AUTH_PATH_SEGMENTS
-            + FILE_PATH_SEGMENTS
-        ):
-            if not any(ext in file_ext for ext in INTERESTING_FILE_EXTENSIONS):
-                return 0
+
+    tracking_params = [
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "fbclid",
+        "gclid",
+        "msclkid",
+        "ref",
+        "source",
+        "campaign",
+        "creative",
+    ]
+
+    if query and params:
+        has_only_tracking_params = True
+        for param in params.keys():
+            if param.lower() not in tracking_params + BORING_PARAMS:
+                has_only_tracking_params = False
+                break
+
+        if has_only_tracking_params:
+            if not any(
+                pp in path_parts
+                for pp in ADMIN_PATH_SEGMENTS + API_PATH_SEGMENTS + AUTH_PATH_SEGMENTS
+            ):
+                if not any(ext in file_ext for ext in INTERESTING_FILE_EXTENSIONS):
+                    return 0
 
     positive_paths = ADMIN_PATH_SEGMENTS + API_PATH_SEGMENTS + AUTH_PATH_SEGMENTS
+    if any(pp in path_parts for pp in positive_paths):
+        return 1
+
     positive_file_paths = [
         "/upload",
         "/download",
@@ -181,23 +225,42 @@ def _determine_label(url: str) -> int:
         "/include",
         "/config",
     ]
-    if any(pp in path_parts for pp in positive_paths):
-        return 1
     if any(pfp in path for pfp in positive_file_paths):
         return 1
+
     if any(p in params for p in INTERESTING_PARAMS if p not in BORING_PARAMS):
         return 1
+
     if (
         file_ext in INTERESTING_FILE_EXTENSIONS
         and file_ext not in COMMON_FILE_EXTENSIONS
     ):
         return 1
+
     if "../" in query or "%2e%2e" in query:
         return 1
+
     if any(p in URL_VALUE_PARAMS for p in params) and (
         any("://" in v[0] for v in params.values() if v)
     ):
-        return 1
+        url_values = [
+            v[0]
+            for v in params.values()
+            if v and isinstance(v[0], str) and "://" in v[0]
+        ]
+        for url_val in url_values:
+            parsed_val = urlparse(url_val)
+            val_ext = os.path.splitext(parsed_val.path)[1].lower()
+            if (
+                val_ext not in negative_exts
+                and val_ext not in MEDIA_EXTENSIONS
+                and not any(
+                    static_dir in parsed_val.path
+                    for static_dir in STATIC_INDICATORS_FOR_FEATURE_EXTRACTION
+                )
+            ):
+                return 1
+        return 0
 
     return 0
 
@@ -220,9 +283,102 @@ def generate_sample_data(output_file: str, num_samples: int = 100) -> str:
     generated_urls = set()
 
     while len(all_urls) < total_needed:
-        focus_type = random.choice(["interesting", "normal"])
+        focus_type = random.choices(
+            ["interesting", "normal", "static_media"], weights=[0.35, 0.40, 0.25], k=1
+        )[0]
 
-        if focus_type == "interesting":
+        if focus_type == "static_media":
+            base_domain = random.choice(BASE_DOMAINS)
+            path = ""
+            query = ""
+
+            approach = random.choice(["static_path", "media_ext", "static_ext"])
+
+            if approach == "static_path":
+                static_dir = random.choice(STATIC_INDICATORS_FOR_FEATURE_EXTRACTION)
+                path_depth = random.randint(0, 2)
+                segments = []
+
+                if path_depth > 0:
+                    segments = random.choices(COMMON_PATH_SEGMENTS, k=path_depth)
+
+                path = static_dir + "/".join(segments)
+
+                if random.random() < 0.7:
+                    common_exts = [".js", ".css", ".png", ".jpg", ".svg"]
+                    path += random.choice(common_exts)
+
+            elif approach == "media_ext":
+                path_depth = random.randint(1, 3)
+                segments = random.choices(
+                    COMMON_PATH_SEGMENTS + FILE_PATH_SEGMENTS, k=path_depth
+                )
+                path = "/" + "/".join(segments)
+                path += random.choice(MEDIA_EXTENSIONS)
+
+            else:
+                path_depth = random.randint(1, 3)
+                segments = random.choices(
+                    COMMON_PATH_SEGMENTS + FILE_PATH_SEGMENTS, k=path_depth
+                )
+                path = "/" + "/".join(segments)
+                static_exts = [
+                    ".css",
+                    ".png",
+                    ".jpg",
+                    ".svg",
+                    ".ico",
+                    ".woff",
+                    ".woff2",
+                ]
+                path += random.choice(static_exts)
+
+            if random.random() < 0.3:
+                params_count = random.randint(1, 3)
+                params = {}
+
+                for _ in range(params_count):
+                    tracking_params = [
+                        "utm_source",
+                        "utm_medium",
+                        "utm_campaign",
+                        "utm_term",
+                        "utm_content",
+                        "fbclid",
+                        "gclid",
+                    ]
+                    param_name = random.choice(tracking_params + BORING_PARAMS)
+
+                    if param_name.startswith("utm_"):
+                        param_value = random.choice(
+                            [
+                                "google",
+                                "facebook",
+                                "twitter",
+                                "email",
+                                "direct",
+                                generate_random_string(5),
+                            ]
+                        )
+                    else:
+                        param_value = generate_id(random.choice(["int", "alnum"]))
+
+                    params[param_name] = param_value
+
+                query = urlencode(params)
+
+            url = f"https://{base_domain}{path}"
+            if query:
+                url = f"{url}?{query}"
+
+            label = _determine_label(url)
+            if label != 0:
+                label = 0
+
+            all_urls.append((url, label))
+            generated_urls.add(url)
+
+        elif focus_type == "interesting":
             interesting_focus = [
                 "admin",
                 "api",

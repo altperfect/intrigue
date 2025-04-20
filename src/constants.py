@@ -945,7 +945,14 @@ STATIC_INDICATORS_FOR_FEATURE_EXTRACTION = [
     "/fonts/",
     "/svg/",
     "/common-v2/",
+    "/common/",
     "/avatar/",
+    "/styles/",
+    "/dist/",
+    "/build/",
+    "/public/",
+    "/cdn/",
+    "/themes/",
 ]
 
 IMAGE_EXTENSIONS = [
@@ -958,6 +965,22 @@ IMAGE_EXTENSIONS = [
     ".bmp",
     ".webp",
     ".logo",
+]
+
+MEDIA_EXTENSIONS = [
+    ".mp3",
+    ".mp4",
+    ".wav",
+    ".ogg",
+    ".avi",
+    ".webm",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".mkv",
+    ".m4a",
+    ".m4v",
+    ".3gp",
 ]
 
 FILES_TO_PENALIZE = {
